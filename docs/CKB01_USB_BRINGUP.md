@@ -93,6 +93,10 @@ CI checks the selected profile, required ath11k packages and disabled NSS Wi-Fi,
 packager, compiles firmware and validates both payload hashes, embedded board
 identity, memory layout, port-to-PHY bindings and required initramfs contents.
 The supplied compiled CPIO must occur inside the decompressed kernel bytes.
+The input is the actual Linux `usr/initramfs_inc_data` file, which is embedded
+by `usr/initramfs_data.S`. Its name does not acquire a compression suffix.
+CI records input paths/sizes/hashes, and preserves the raw FIT and incbin file
+as an explicitly unvalidated artifact if post-build verification fails.
 
 After success, download `ckb01-usb-initramfs-<builder SHA>` from the Actions
 run. It contains both image names, DTB/DTS, `fit-report.json`, the initramfs
@@ -103,3 +107,41 @@ explicitly **pending hardware validation**.
 On `ckb01-ath11k-bringup`, CI additionally checks BDF reproducibility, the
 wireless helpers, and the actual initramfs/DTB using `ckb01-fit.py --wireless`.
 The historical `ckb01-usb-bringup` commits contain the wired-only image.
+
+## Verification failure investigation (2026-10-16)
+
+Runs `38880494854` (wired) and `38884886511` (ath11k) both completed compilation
+and passed the check for exactly one CKB01 initramfs FIT. They then failed
+before the Python verifier because the workflow searched for the nonexistent
+`usr/initramfs_data.cpio.zst` filename.
+
+Linux 6.18's [usr/Makefile](https://github.com/torvalds/linux/blob/v6.18/usr/Makefile)
+generates `usr/initramfs_data.cpio` and compresses it into
+`usr/initramfs_inc_data`; [initramfs_data.S](https://github.com/torvalds/linux/blob/v6.18/usr/initramfs_data.S)
+embeds that exact, suffix-free output. The corrected workflow selects
+`*/linux-*/usr/initramfs_inc_data` and still requires its exact bytes to occur
+in the FIT's decompressed Image before inspecting the CPIO contents.
+
+The user-specified [upstream release](https://github.com/JuliusBairaktaris/Qualcommax_NSS_Builder/releases/tag/ppe-nss-20261013T200550Z-38460054734)
+uses the same OpenWrt SHA. Its 77 uploaded assets contain sysupgrade images
+and metadata, with no standalone initramfs/FIT/CPIO asset. The downloaded
+TCL HH500V image is 21,227,801 bytes, SHA256
+`9deea1f1bee4685b190920a0eaa7b8464dd6ecc2a750a118138a2522865fa107`.
+Its tar contains a 5,996,108-byte kernel FIT and a 15,218,688-byte separate
+rootfs. The gzip ARM64 kernel contains no Zstd frame. It is a sysupgrade
+reference, not a CKB01 RAM-root image or a substitute calibration source.
+The image was downloaded temporarily for this check, then removed after
+inspection. No release mirror is stored in the project.
+
+For an actual embedded-initramfs reference, the local temporary Haze FIT
+contains an 11,725,191-byte Zstd frame at Image offset 14,884,808, decoding
+to a 42,983,424-byte newc archive. Its presence confirms the byte-matching
+method works with a real compressed ramdisk; its board contents differ from
+CKB01 and do not satisfy CKB01's requirements.
+
+Earlier tests exercised the Python packager but not the workflow's file
+discovery. Regression tests now execute the actual workflow Bash step with
+a Linux 6.18 build-directory layout and a Zstd-containing FIT. They reproduce
+the old failure, pass with `initramfs_inc_data`, and reject an incbin file
+whose bytes are absent from the FIT. Raw build outputs are retained on a
+future verification failure so the compiled files can be inspected directly.

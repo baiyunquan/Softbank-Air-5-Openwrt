@@ -149,12 +149,21 @@ jobs:
       - name: Verify and package USB initramfs
         run: |
           set -euo pipefail
+          # Linux usr/initramfs_data.S embeds initramfs_inc_data regardless of
+          # compression. The .cpio file is its input, not the embedded output.
+          find openwrt/bin/targets/qualcommax/ipq807x openwrt/build_dir -type f \
+            \( -name '*oppo_ckb01*' -o -path '*/usr/*initramfs*' \) \
+            -printf '%p %s bytes\n' | sort | tee logs/build-artifact-inventory.txt
           mapfile -t fits < <(find openwrt/bin/targets/qualcommax/ipq807x -maxdepth 1 \
             -name 'openwrt-*-oppo_ckb01-initramfs-uImage.itb' -type f)
           mapfile -t ramdisks < <(find openwrt/build_dir -type f \
-            -path '*/linux-6.18*/usr/initramfs_data.cpio.zst')
+            -path '*/linux-*/usr/initramfs_inc_data')
           [[ ${#fits[@]} -eq 1 ]] || { echo 'Expected exactly one CKB01 initramfs FIT' >&2; exit 1; }
-          [[ ${#ramdisks[@]} -eq 1 ]] || { echo 'Expected exactly one compiled initramfs archive' >&2; exit 1; }
+          [[ ${#ramdisks[@]} -eq 1 ]] || {
+            echo "Expected exactly one kernel usr/initramfs_inc_data, found ${#ramdisks[@]}; see build-artifact-inventory.txt" >&2
+            exit 1
+          }
+          sha256sum "${fits[0]}" "${ramdisks[0]}" | tee logs/verification-inputs.sha256
           python3 builder/scripts/ckb01-fit.py "${fits[0]}" \
             --initramfs "${ramdisks[0]}" --wireless --output artifacts | tee logs/fit-validation.log
           cp logs/source-versions.txt logs/config.buildinfo artifacts/
@@ -196,3 +205,15 @@ jobs:
           path: logs/
           if-no-files-found: ignore
           retention-days: 30
+
+      - name: Preserve raw build outputs on verification failure
+        if: failure() && steps.compile.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ckb01-unvalidated-build-${{ github.sha }}
+          path: |
+            openwrt/bin/targets/qualcommax/ipq807x/openwrt-*-oppo_ckb01-initramfs-uImage.itb
+            openwrt/build_dir/**/usr/initramfs_inc_data
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0

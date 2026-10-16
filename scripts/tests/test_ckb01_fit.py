@@ -3,6 +3,7 @@
 
 import gzip
 import hashlib
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -56,7 +57,8 @@ class Ckb01FitTests(unittest.TestCase):
         self.work = Path(self.temporary.name)
 
     def make_fit(self, *, board="oppo,ckb01", missing_module=False,
-                 oversized=False, swapped_phy=False, wireless=False, bad_bdf=False, missing_segment=False):
+                 oversized=False, swapped_phy=False, wireless=False, bad_bdf=False, missing_segment=False,
+                 compressed_initramfs=False):
         paths = [name for name in REQUIRED if not (missing_module and name.endswith("mhi_wwan_ctrl.ko"))]
         contents = {}
         if wireless:
@@ -66,6 +68,9 @@ class Ckb01FitTests(unittest.TestCase):
             if missing_segment:
                 paths.remove("lib/firmware/IPQ8074/q6_fw.b08")
         archive = cpio(paths, contents)
+        if compressed_initramfs:
+            archive = subprocess.run(["zstd", "-q", "-c"], input=archive, capture_output=True,
+                                     check=True).stdout
         self.initramfs = self.work / "initramfs_data.cpio"
         self.initramfs.write_bytes(archive)
         image = bytearray(64)
@@ -221,6 +226,46 @@ class Ckb01FitTests(unittest.TestCase):
         result = self.package(wireless=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("q6_fw.b08", result.stderr)
+
+    def workflow_package(self, *, misplaced=False):
+        """Execute the actual CI step with the Linux 6.18 Kbuild output name."""
+        self.make_fit(wireless=True, compressed_initramfs=True)
+        workspace = self.work / "workspace"
+        workspace.mkdir()
+        repo = PACKAGER.parents[1]
+        (workspace / "builder").symlink_to(repo, target_is_directory=True)
+        target = workspace / "openwrt/bin/targets/qualcommax/ipq807x"
+        target.mkdir(parents=True)
+        (target / "openwrt-qualcommax-ipq807x-oppo_ckb01-initramfs-uImage.itb").write_bytes(self.source.read_bytes())
+        usr = workspace / "openwrt/build_dir/target-aarch64_cortex-a53_musl/linux-qualcommax_ipq807x/linux-6.18.55/usr"
+        usr.mkdir(parents=True)
+        (usr / "initramfs_inc_data").write_bytes(b"unrelated bytes" if misplaced else self.initramfs.read_bytes())
+        # Linux also keeps an uncompressed input; it is not what .incbin embeds.
+        (usr / "initramfs_data.cpio").write_bytes(b"not the compressed incbin input")
+        (workspace / "logs").mkdir()
+        (workspace / "artifacts").mkdir()
+        for name in ("source-versions.txt", "config.buildinfo"):
+            (workspace / "logs" / name).write_text("workflow fixture\n")
+        workflow = (repo / ".github/workflows/build-ckb01.yml").read_text()
+        section = workflow.split("      - name: Verify and package USB initramfs\n", 1)[1]
+        section = section.split("\n      - name:", 1)[0]
+        script = section.split("        run: |\n", 1)[1]
+        script = "\n".join(line[10:] for line in script.splitlines())
+        result = subprocess.run(["bash", "-c", script], cwd=workspace, text=True, capture_output=True,
+                                env={**os.environ, "GITHUB_SHA": "test-builder-sha", "UPSTREAM_SHA": "test-source-sha",
+                                     "GITHUB_STEP_SUMMARY": str(workspace / "summary.md")})
+        return result, workspace
+
+    def test_actual_workflow_accepts_linux_618_incbin_output(self):
+        result, workspace = self.workflow_package()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((workspace / "artifacts/uimage-initramfs.itb").is_file())
+
+    def test_actual_workflow_rejects_an_archive_not_embedded_in_its_fit(self):
+        result, workspace = self.workflow_package(misplaced=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not embedded", result.stderr)
+        self.assertFalse((workspace / "artifacts/uimage-initramfs.itb").exists())
 
 
 if __name__ == "__main__":

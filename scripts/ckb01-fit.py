@@ -191,6 +191,7 @@ def verify_fit(fit, initramfs, work, wireless=False):
         "kernel_load": "0x41000000", "kernel_entry": "0x41000000",
         "kernel_footprint_bytes": footprint, "fit_size_bytes": fit.stat().st_size,
         "initramfs_sha256": hashlib.sha256(initramfs.read_bytes()).hexdigest(),
+        "initramfs_input": str(initramfs),
         "wireless": {"enabled": wireless, "bdf_sha256": BDF_SHA256 if wireless else None,
                      "calibration_source": "unit ART at boot" if wireless else None,
                      "hardware_validation": "not performed"},
@@ -231,7 +232,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("fit", type=Path)
     parser.add_argument("--initramfs", type=Path, required=True,
-                        help="kernel usr/initramfs_data.cpio.zst (must be embedded in the Image)")
+                        help="kernel usr/initramfs_inc_data (must be embedded in the Image)")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--wireless", action="store_true", help="require CKB01 ath11k DT, BDF and runtime contents")
     args = parser.parse_args()
