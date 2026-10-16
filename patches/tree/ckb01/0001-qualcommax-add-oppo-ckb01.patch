@@ -1,0 +1,271 @@
+Subject: [PATCH] qualcommax: add OPPO CKB01 USB initramfs bring-up
+
+Base: JuliusBairaktaris/openwrt-ppe-nss a0d3cabc052f9c3c19a0abe2b2633195f703bccc
+
+Add a RAM-only board profile with two PSGMII ports and PCIe/MHI.
+Physical port placement and PHY reset GPIOs require hardware verification.
+
+diff --git a/target/linux/qualcommax/dts/ipq8072-ckb01.dts b/target/linux/qualcommax/dts/ipq8072-ckb01.dts
+new file mode 100644
+index 0000000..ee96b9d
+--- /dev/null
++++ b/target/linux/qualcommax/dts/ipq8072-ckb01.dts
+@@ -0,0 +1,220 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++/dts-v1/;
++
++#include "ipq8074.dtsi"
++#include "ipq8074-hk-cpu.dtsi"
++#include "ipq8074-ess.dtsi"
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++/ {
++	model = "OPPO CKB01 (SoftBank Air 5)";
++	compatible = "oppo,ckb01", "qcom,ipq8074";
++	qcom,board-id = <8 0>;
++
++	aliases {
++		serial0 = &blsp1_uart5;
++		ethernet0 = &swport2;
++		ethernet1 = &swport1;
++		led-boot = &led_status_green;
++		led-running = &led_status_green;
++		led-failsafe = &led_status_red;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++		/* Override the OEM environment's loglevel=0 during bring-up. */
++		bootargs-append = " console=ttyMSM0,115200n8 loglevel=7";
++	};
++
++	memory@40000000 {
++		device_type = "memory";
++		reg = <0 0x40000000 0 0x20000000>;
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			linux,code = <KEY_RESTART>;
++			gpios = <&tlmm 60 GPIO_ACTIVE_LOW>;
++		};
++
++		wps {
++			label = "wps";
++			linux,code = <KEY_WPS_BUTTON>;
++			gpios = <&tlmm 15 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_status_green: status-green {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_STATUS;
++			gpios = <&tlmm 43 GPIO_ACTIVE_HIGH>;
++		};
++
++		led_status_red: status-red {
++			color = <LED_COLOR_ID_RED>;
++			function = LED_FUNCTION_STATUS;
++			gpios = <&tlmm 42 GPIO_ACTIVE_HIGH>;
++		};
++	};
++};
++
++&tlmm {
++	mdio_pins: mdio-state {
++		mdc-pins {
++			pins = "gpio68";
++			function = "mdc";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++
++		mdio-pins {
++			pins = "gpio69";
++			function = "mdio";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++	};
++
++	pcie0_default_state: pcie0-wake-state {
++		pins = "gpio59";
++		function = "pcie0_wake";
++		drive-strength = <8>;
++		bias-pull-up;
++	};
++
++	rj45-led-enable-hog {
++		gpio-hog;
++		gpios = <17 GPIO_ACTIVE_HIGH>;
++		output-high;
++		line-name = "rj45-led-enable";
++	};
++};
++
++&blsp1_uart5 {
++	status = "okay";
++};
++
++&prng {
++	status = "okay";
++};
++
++&blsp1_spi1 {
++	status = "okay";
++
++	flash@0 {
++		compatible = "n25q128a11", "jedec,spi-nor";
++		reg = <0>;
++		spi-max-frequency = <50000000>;
++
++		partitions {
++			compatible = "qcom,smem-part";
++		};
++	};
++};
++
++&mdio {
++	status = "okay";
++	pinctrl-0 = <&mdio_pins>;
++	pinctrl-names = "default";
++	/* Preserve OEM GPIO levels; the stock reset GPIO list is ambiguous. */
++	ethernet-phy-package@8 {
++		compatible = "qcom,qca8075-package";
++		reg = <8>;
++		#address-cells = <1>;
++		#size-cells = <0>;
++		qcom,package-mode = "psgmii";
++
++		phy8: ethernet-phy@8 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <8>;
++		};
++
++		phy9: ethernet-phy@9 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <9>;
++		};
++	};
++};
++
++&uniphy0 {
++	status = "okay";
++};
++
++&switch {
++	status = "okay";
++
++	ports {
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		port@0 {
++			reg = <0>;
++			ethernet = <&edma>;
++			phy-mode = "internal";
++			fixed-link {
++				speed = <1000>;
++				full-duplex;
++			};
++		};
++
++		/* Initial physical mapping: LAN2 -> port1; confirm on hardware. */
++		swport1: port@1 {
++			reg = <1>;
++			label = "lan";
++			phy-handle = <&phy8>;
++			phy-mode = "psgmii";
++			pcs-handle = <&uniphy0 0>;
++		};
++
++		/* Initial physical mapping: LAN1 -> port2; confirm on hardware. */
++		swport2: port@2 {
++			reg = <2>;
++			label = "wan";
++			phy-handle = <&phy9>;
++			phy-mode = "psgmii";
++			pcs-handle = <&uniphy0 1>;
++		};
++	};
++};
++
++&edma {
++	status = "okay";
++};
++
++&pcie_qmp0 {
++	status = "okay";
++};
++
++&pcie0 {
++	status = "okay";
++	pinctrl-0 = <&pcie0_default_state>;
++	pinctrl-names = "default";
++	perst-gpio = <&tlmm 58 GPIO_ACTIVE_LOW>;
++
++	pcie@0 {
++		modem@0,0 {
++			reg = <0 0 0 0 0>;
++		};
++	};
++};
++
++&qusb_phy_0 { status = "okay"; };
++&qusb_phy_1 { status = "okay"; };
++&ssphy_0 { status = "okay"; };
++&ssphy_1 { status = "okay"; };
++&usb_0 { dr_mode = "host"; status = "okay"; };
++&usb_1 { dr_mode = "host"; status = "okay"; };
++
++/* ART is exposed for investigation; no borrowed BDF/calibration is loaded. */
++&wifi {
++	status = "disabled";
++};
+diff --git a/target/linux/qualcommax/image/ipq807x.mk b/target/linux/qualcommax/image/ipq807x.mk
+index de72257..39309ce 100644
+--- a/target/linux/qualcommax/image/ipq807x.mk
++++ b/target/linux/qualcommax/image/ipq807x.mk
+@@ -430,6 +430,21 @@ define Device/netgear_wax630
+ endef
+ TARGET_DEVICES += netgear_wax630
+ 
++define Device/oppo_ckb01
++	$(call Device/FitImage)
++	DEVICE_VENDOR := OPPO
++	DEVICE_MODEL := CKB01 (SoftBank Air 5)
++	SOC := ipq8072
++	DEVICE_DTS_CONFIG := config@1
++	DEVICE_DTS_DELIMITER := @
++	# USB/RAM bring-up only: no writable-flash installation image.
++	IMAGES :=
++	DEVICE_PACKAGES := kmod-mhi-pci-generic kmod-mhi-wwan-ctrl \
++		kmod-mhi-net kmod-qrtr-mhi \
++		-kmod-ath11k-ahb -ath11k-firmware-ipq8074 -wpad-basic-mbedtls
++endef
++TARGET_DEVICES += oppo_ckb01
++
+ define Device/prpl_haze
+ 	$(call Device/FitImage)
+ 	$(call Device/EmmcImage)
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/board.d/02_network b/target/linux/qualcommax/ipq807x/base-files/etc/board.d/02_network
+index de07242..5a7fb2b 100644
+--- a/target/linux/qualcommax/ipq807x/base-files/etc/board.d/02_network
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/board.d/02_network
+@@ -13,6 +13,7 @@ ipq807x_setup_interfaces()
+ 	case "$board" in
+ 	aliyun,ap8220|\
+ 	edgecore,eap102|\
++	oppo,ckb01|\
+ 	tcl,linkhub-hh500v|\
+ 	tplink,deco-x80-5g|\
+ 	yuncore,ax880|\

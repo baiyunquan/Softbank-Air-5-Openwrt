@@ -1,0 +1,8 @@
+CONFIG_TARGET_qualcommax_ipq807x=y
+CONFIG_TARGET_MULTI_PROFILE=n
+CONFIG_TARGET_PER_DEVICE_ROOTFS=n
+CONFIG_TARGET_qualcommax_ipq807x_DEVICE_oppo_ckb01=y
+CONFIG_PACKAGE_kmod-mhi-pci-generic=y
+CONFIG_PACKAGE_kmod-mhi-wwan-ctrl=y
+CONFIG_PACKAGE_kmod-mhi-net=y
+CONFIG_PACKAGE_kmod-qrtr-mhi=y

@@ -1,0 +1,55 @@
+#!/bin/sh
+# Collect evidence without changing GPIOs, modem state, or flash contents.
+set -u
+. /lib/functions/system.sh
+
+output=${1:-/tmp/ckb01-diag-$(date +%Y%m%d-%H%M%S).tar.gz}
+work=$(mktemp -d /tmp/ckb01-diag.XXXXXX) || exit 1
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+capture() {
+	name=$1
+	shift
+	"$@" >"$work/$name.txt" 2>&1 || true
+}
+capture board ubus call system board
+capture uname uname -a
+capture dmesg dmesg
+capture logread logread
+capture cmdline cat /proc/cmdline
+capture memory cat /proc/meminfo
+capture partitions cat /proc/mtd
+capture pci lspci -nnk
+capture usb lsusb
+capture addresses ip -details address
+capture routes ip route show table all
+capture network ubus call network.interface dump
+capture uci-network uci export network
+capture uci-firewall uci export firewall
+capture mac-source cat /tmp/ckb01-mac-source
+for interface in lan wan; do
+	capture "ethtool-$interface" ethtool "$interface"
+	capture "ethtool-stats-$interface" ethtool -S "$interface"
+done
+{
+	for device in /sys/bus/mdio_bus/devices/*; do
+		[ -d "$device" ] || continue
+		printf '\n%s\n' "$device"
+		cat "$device/phy_id" "$device/phy_interface" 2>/dev/null || true
+	done
+	printf '\nMHI devices:\n'
+	ls -l /sys/bus/mhi/devices/ /sys/class/wwan/ /dev/wwan* /dev/mhi* 2>/dev/null || true
+} >"$work/phy-mhi.txt"
+art=$(find_mtd_chardev '0:ART')
+[ -n "$art" ] || art=$(find_mtd_chardev ART)
+if [ -n "$art" ] && [ -r "$art" ]; then
+	capture art-sha256 sha256sum "$art"
+	capture art-size cat "/sys/class/mtd/${art##*/}/size"
+fi
+[ ! -r /sys/firmware/fdt ] || cp /sys/firmware/fdt "$work/running.dtb"
+if [ -d /sys/fs/pstore ]; then
+	cp -r /sys/fs/pstore "$work/" 2>/dev/null || true
+fi
+printf '%s\n' 'Hardware validation pending. Candidate mapping: LAN1=port2/PHY9/WAN; LAN2=port1/PHY8/LAN.' \
+	>"$work/README.txt"
+tar -czf "$output" -C "$work" . || exit 1
+printf '%s\n' "$output"

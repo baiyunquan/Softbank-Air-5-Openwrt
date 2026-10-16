@@ -1,0 +1,18 @@
+#!/bin/sh
+# Read the device's ART by partition label; never write to an MTD device.
+set -eu
+. /lib/functions/system.sh
+
+[ "$#" -eq 1 ] || { echo "Usage: ckb01-art-backup OUTPUT_FILE" >&2; exit 1; }
+[ "$(board_name)" = "oppo,ckb01" ] || { echo 'Not an OPPO CKB01' >&2; exit 1; }
+art=$(find_mtd_chardev '0:ART')
+[ -n "$art" ] || art=$(find_mtd_chardev ART)
+[ -n "$art" ] && [ -r "$art" ] || { echo 'ART partition not found' >&2; exit 1; }
+size=$(cat "/sys/class/mtd/${art##*/}/size")
+[ "$size" -eq 262144 ] || { echo "Unexpected ART size: $size (expected 262144)" >&2; exit 1; }
+case "$1" in /dev/*|/sys/*|/proc/*) echo 'Output must be a regular filesystem path' >&2; exit 1 ;; esac
+[ ! -e "$1" ] || { echo 'Output already exists' >&2; exit 1; }
+umask 077
+cat "$art" >"$1"
+[ "$(wc -c <"$1")" -eq "$size" ] || { echo 'Incomplete ART read' >&2; exit 1; }
+sha256sum "$1"
