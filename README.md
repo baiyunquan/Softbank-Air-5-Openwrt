@@ -1,5 +1,10 @@
 # Qualcommax NSS Builder
 
+This fork also contains a dedicated [OPPO CKB01 / SoftBank Air 5 USB
+bring-up image](docs/CKB01_USB_BRINGUP.md), built by the **Build CKB01 USB
+initramfs** workflow. It uses RAM root, LAN1 as DHCP WAN and LAN2 for
+management at `192.168.5.1`; hardware validation is pending.
+
 ### Prebuilt OpenWrt firmware with Qualcomm NSS hardware offload for IPQ807x and IPQ60xx (IPQ6018) routers
 
 [![Build](https://img.shields.io/github/actions/workflow/status/JuliusBairaktaris/Qualcommax_NSS_Builder/build.yml?branch=main&style=flat-square&logo=github&label=Build)](https://github.com/JuliusBairaktaris/Qualcommax_NSS_Builder/actions/workflows/build.yml)
