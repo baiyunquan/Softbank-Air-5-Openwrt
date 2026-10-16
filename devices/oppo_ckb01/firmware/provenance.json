@@ -1,0 +1,22 @@
+{
+  "source": "OEM root.7z (.251) and OEM uImage-initramfs.itb built-in rootfs",
+  "source_path": "lib/firmware/IPQ8074/WIFI_FW/bdwlan.bin",
+  "oem_firmware_version": "WLAN.HK.2.4-02142-QCAHKSWPL_SILICONZ-1.395212.1 v2",
+  "raw_bytes": 131072,
+  "raw_sha256": "9fdaff50396c03e097f713067df149be3c9b1d36689e4d20eff455f00c886944",
+  "identical_oem_variant": "bdwlan.b290",
+  "encoder_repo": "https://github.com/qca/qca-swiss-army-knife",
+  "encoder_commit": "6209ad4248f73a3d4ba6a9647ce062a1f8aecde2",
+  "encoder_path": "tools/scripts/ath11k/ath11k-bdencoder",
+  "encoder_sha256": "4a2181d16d6ff35d60773b75aaa1bbe349afea7f03d4d2d97a596b81636a9e87",
+  "board_key": "bus=ahb,qmi-chip-id=0,qmi-board-id=255,variant=OPPO-CKB01",
+  "board2_sha256": "d53ce59c18ccc20b83f485aa7328ab1b07e837f724642da7a2bd31c574c8de16",
+  "calibration": {
+    "source": "device ART partition (0:ART / ART)",
+    "art_bytes": 262144,
+    "offset": 4096,
+    "bytes": 131072,
+    "local_unit_dump_available": false
+  },
+  "hardware_validation": "not performed"
+}

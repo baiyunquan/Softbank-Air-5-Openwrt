@@ -20,6 +20,17 @@ REQUIRED_FILES = (
     "etc/uci-defaults/99-ckb01-network",
 )
 REQUIRED_MODULES = ("mhi_pci_generic", "mhi_wwan_ctrl")
+WIRELESS_FILES = (
+    "lib/functions/ckb01-wifi.sh", "etc/hotplug.d/firmware/10-ckb01-caldata",
+    "etc/init.d/ckb01-wifi", "etc/rc.d/S95ckb01-wifi", "usr/sbin/ckb01-wifi-setup",
+    "usr/sbin/iw", "usr/bin/iwinfo", "usr/sbin/hostapd",
+    "lib/firmware/IPQ8074/q6_fw.mdt", "lib/firmware/IPQ8074/m3_fw.mdt",
+    "lib/firmware/regulatory.db",
+)
+WIRELESS_FILES += tuple(f"lib/firmware/IPQ8074/q6_fw.b{index:02d}" for index in (0, 1, 2, 3, 4, 5, 7, 8))
+WIRELESS_FILES += tuple(f"lib/firmware/IPQ8074/m3_fw.b{index:02d}" for index in (0, 1, 2))
+BDF_PATH = "lib/firmware/ath11k/IPQ8074/hw2.0/board-2.bin"
+BDF_SHA256 = "d53ce59c18ccc20b83f485aa7328ab1b07e837f724642da7a2bd31c574c8de16"
 
 
 def command(*args):
@@ -47,8 +58,8 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def archive_paths(data):
-    paths = set()
+def archive_entries(data):
+    entries = {}
     offset = 0
     while offset + 110 <= len(data):
         header = data[offset:offset + 110]
@@ -61,13 +72,13 @@ def archive_paths(data):
         offset = (start + name_size + 3) & ~3
         require(offset + size <= len(data), "truncated initramfs data")
         if name == "TRAILER!!!":
-            return paths
-        paths.add(name.removeprefix("./").lstrip("/"))
+            return entries
+        entries[name.removeprefix("./").lstrip("/")] = data[offset:offset + size]
         offset = (offset + size + 3) & ~3
     raise ValueError("initramfs archive has no TRAILER!!!")
 
 
-def verify_initramfs(path, kernel):
+def verify_initramfs(path, kernel, wireless=False):
     compressed = path.read_bytes()
     require(bool(compressed) and compressed in kernel,
             "the supplied initramfs bytes are not embedded in the FIT kernel")
@@ -77,16 +88,26 @@ def verify_initramfs(path, kernel):
         data = gzip.decompress(compressed)
     else:
         data = compressed
-    paths = archive_paths(data)
+    entries = archive_entries(data)
+    paths = set(entries)
     for name in REQUIRED_FILES:
         require(name in paths, f"initramfs is missing {name}")
-    for module in REQUIRED_MODULES:
+    modules = REQUIRED_MODULES
+    if wireless:
+        for name in WIRELESS_FILES:
+            require(bool(entries.get(name)), f"wireless initramfs is missing or has empty {name}")
+        require(hashlib.sha256(entries.get(BDF_PATH, b"")).hexdigest() == BDF_SHA256,
+                "wireless initramfs BDF does not match the CKB01 OEM board data")
+        require(not any("/cal-ahb-" in name or name.endswith("/caldata.bin") for name in paths),
+                "wireless initramfs must obtain unit calibration from ART at runtime")
+        modules += ("ath11k", "ath11k_ahb", "mac80211", "cfg80211")
+    for module in modules:
         require(any(Path(name).name in (f"{module}.ko", f"{module}.ko.zst", f"{module}.ko.gz")
                     for name in paths), f"initramfs is missing {module}")
     return paths
 
 
-def verify_board(dtb):
+def verify_board(dtb, wireless=False):
     require("oppo,ckb01" in prop(dtb, "/", "compatible").split(),
             "embedded DT compatible is not oppo,ckb01")
     require(prop(dtb, "/", "qcom,board-id", "x") == [8, 0], "unexpected CKB01 board ID")
@@ -104,9 +125,21 @@ def verify_board(dtb):
             raise ValueError(f"port{port} PHY is not referenced by the switch") from error
         require(prop(dtb, node, "phy-handle", "x") == expected,
                 f"port{port} PHY binding is wrong")
+    if wireless:
+        node = "/soc/wifi@c0000000"
+        require(prop(dtb, node, "status") == "okay", "wireless DT is disabled")
+        require(prop(dtb, node, "qcom,ath11k-calibration-variant") == "OPPO-CKB01",
+                "wireless DT has the wrong BDF variant")
+        require(prop(dtb, node, "qcom,ath11k-fw-memory-mode", "x") == [1],
+                "wireless DT must use firmware memory mode 1")
+        regions = [prop(dtb, f"/reserved-memory/{name}", "reg", "x")
+                   for name in children(dtb, "/reserved-memory")]
+        for address, size in ((0x4B000000, 0x3700000), (0x4E700000, 0x100000), (0x4E800000, 0x100000)):
+            require([0, address, 0, size] in regions,
+                    f"wireless DT has the wrong 512MB reserved-memory region at {address:#x}")
 
 
-def verify_fit(fit, initramfs, work):
+def verify_fit(fit, initramfs, work, wireless=False):
     require(prop(fit, "/configurations", "default") == "config@1", "FIT default must be config@1")
     config = "/configurations/config@1"
     kernel_node = prop(fit, config, "kernel")
@@ -151,31 +184,34 @@ def verify_fit(fit, initramfs, work):
             "FIT buffer reaches the stock reserved-memory area at 0x4a400000")
     dtb = work / "ckb01.dtb"
     dtb.write_bytes(payloads[fdt_node])
-    verify_board(dtb)
-    paths = verify_initramfs(initramfs, kernel)
+    verify_board(dtb, wireless)
+    paths = verify_initramfs(initramfs, kernel, wireless)
     return dtb, paths, {
         "board": "oppo,ckb01", "hardware_validation": "not performed",
         "kernel_load": "0x41000000", "kernel_entry": "0x41000000",
         "kernel_footprint_bytes": footprint, "fit_size_bytes": fit.stat().st_size,
         "initramfs_sha256": hashlib.sha256(initramfs.read_bytes()).hexdigest(),
+        "wireless": {"enabled": wireless, "bdf_sha256": BDF_SHA256 if wireless else None,
+                     "calibration_source": "unit ART at boot" if wireless else None,
+                     "hardware_validation": "not performed"},
         "port_mapping": {"LAN1": "wan / switch port2 / PHY9 (pending hardware check)",
                          "LAN2": "lan / switch port1 / PHY8 (pending hardware check)"},
     }
 
 
-def package(source, initramfs, output):
+def package(source, initramfs, output, wireless=False):
     with tempfile.TemporaryDirectory(prefix="ckb01-package-") as temporary:
         work = Path(temporary)
         fit = work / IMAGE_NAME
         shutil.copyfile(source, fit)
-        dtb, paths, report = verify_fit(fit, initramfs, work)
+        dtb, paths, report = verify_fit(fit, initramfs, work, wireless)
         alias = "/configurations/config@hk09"
         command("fdtput", "-c", fit, alias)
         for name, value in (("description", "OpenWrt OPPO CKB01 HK09"),
                             ("kernel", "kernel@1"), ("fdt", "fdt@1")):
             command("fdtput", "-t", "s", fit, alias, name, value)
         # Tree growth must preserve payload bytes and their hashes.
-        dtb, paths, report = verify_fit(fit, initramfs, work)
+        dtb, paths, report = verify_fit(fit, initramfs, work, wireless)
         command("dumpimage", "-l", fit)
         (work / "fit-report.json").write_text(json.dumps(report, indent=2) + "\n")
         (work / "initramfs-files.txt").write_text("\n".join(sorted(paths)) + "\n")
@@ -197,9 +233,10 @@ def main():
     parser.add_argument("--initramfs", type=Path, required=True,
                         help="kernel usr/initramfs_data.cpio.zst (must be embedded in the Image)")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--wireless", action="store_true", help="require CKB01 ath11k DT, BDF and runtime contents")
     args = parser.parse_args()
     try:
-        package(args.fit, args.initramfs, args.output)
+        package(args.fit, args.initramfs, args.output, args.wireless)
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         parser.exit(1, f"CKB01 FIT validation failed: {error}\n")
 

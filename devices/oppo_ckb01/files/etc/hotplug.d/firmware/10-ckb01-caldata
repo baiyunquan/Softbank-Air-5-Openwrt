@@ -1,0 +1,12 @@
+#!/bin/sh
+
+[ "$FIRMWARE" = 'ath11k/IPQ8074/hw2.0/cal-ahb-c000000.wifi.bin' ] || exit 0
+. /lib/functions/system.sh
+[ "$(board_name)" = 'oppo,ckb01' ] || exit 0
+. /lib/functions/ckb01-wifi.sh
+
+art=$(find_mtd_chardev '0:ART')
+[ -n "$art" ] || art=$(find_mtd_chardev ART)
+size=
+[ -z "$art" ] || size=$(cat "/sys/class/mtd/${art##*/}/size" 2>/dev/null)
+ckb01_caldata_extract "$art" "$size" "/lib/firmware/$FIRMWARE" /tmp/ckb01-caldata.status

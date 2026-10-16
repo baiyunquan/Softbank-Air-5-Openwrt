@@ -19,16 +19,32 @@ REQUIRED = [
     "lib/modules/6.18/mhi_pci_generic.ko",
     "lib/modules/6.18/mhi_wwan_ctrl.ko",
 ]
+WIRELESS_FILES = [
+    "lib/functions/ckb01-wifi.sh", "etc/hotplug.d/firmware/10-ckb01-caldata",
+    "etc/init.d/ckb01-wifi", "etc/rc.d/S95ckb01-wifi", "usr/sbin/ckb01-wifi-setup",
+    "usr/sbin/iw", "usr/bin/iwinfo", "usr/sbin/hostapd",
+    "lib/firmware/IPQ8074/q6_fw.mdt", "lib/firmware/IPQ8074/m3_fw.mdt",
+    "lib/firmware/regulatory.db",
+    "lib/modules/6.18/ath11k.ko", "lib/modules/6.18/ath11k_ahb.ko",
+    "lib/modules/6.18/mac80211.ko", "lib/modules/6.18/cfg80211.ko",
+]
+WIRELESS_FILES += [f"lib/firmware/IPQ8074/q6_fw.b{index:02d}" for index in (0, 1, 2, 3, 4, 5, 7, 8)]
+WIRELESS_FILES += [f"lib/firmware/IPQ8074/m3_fw.b{index:02d}" for index in (0, 1, 2)]
+BDF_PATH = "lib/firmware/ath11k/IPQ8074/hw2.0/board-2.bin"
+BDF = PACKAGER.parents[1] / "devices/oppo_ckb01/files" / BDF_PATH
 
 
-def cpio(paths):
+def cpio(paths, contents=None):
     """Build a small newc archive without depending on the packager."""
     archive = bytearray()
     for number, name in enumerate([*paths, "TRAILER!!!"], 1):
         encoded = name.encode() + b"\0"
-        fields = [number, 0o100755, 0, 0, 1, 0, 0, 0, 0, 0, 0, len(encoded), 0]
+        payload = (contents or {}).get(name, b"")
+        fields = [number, 0o100755, 0, 0, 1, 0, len(payload), 0, 0, 0, 0, len(encoded), 0]
         archive += b"070701" + b"".join(f"{value:08x}".encode() for value in fields)
         archive += encoded
+        archive += b"\0" * (-len(archive) % 4)
+        archive += payload
         archive += b"\0" * (-len(archive) % 4)
     return bytes(archive)
 
@@ -40,9 +56,16 @@ class Ckb01FitTests(unittest.TestCase):
         self.work = Path(self.temporary.name)
 
     def make_fit(self, *, board="oppo,ckb01", missing_module=False,
-                 oversized=False, swapped_phy=False):
+                 oversized=False, swapped_phy=False, wireless=False, bad_bdf=False, missing_segment=False):
         paths = [name for name in REQUIRED if not (missing_module and name.endswith("mhi_wwan_ctrl.ko"))]
-        archive = cpio(paths)
+        contents = {}
+        if wireless:
+            paths += [*WIRELESS_FILES, BDF_PATH]
+            contents = {name: b"test payload" for name in WIRELESS_FILES}
+            contents[BDF_PATH] = b"wrong BDF" if bad_bdf else BDF.read_bytes()
+            if missing_segment:
+                paths.remove("lib/firmware/IPQ8074/q6_fw.b08")
+        archive = cpio(paths, contents)
         self.initramfs = self.work / "initramfs_data.cpio"
         self.initramfs.write_bytes(archive)
         image = bytearray(64)
@@ -61,8 +84,20 @@ class Ckb01FitTests(unittest.TestCase):
     #address-cells = <2>; #size-cells = <2>;
     qcom,board-id = <8 0>;
     memory@40000000 {{ device_type = "memory"; reg = <0 0x40000000 0 0x20000000>; }};
+    reserved-memory {{
+        #address-cells = <2>; #size-cells = <2>; ranges;
+        wcnss@4b000000 {{ reg = <0 0x4b000000 0 0x3700000>; no-map; }};
+        q6-etr@4e700000 {{ reg = <0 0x4e700000 0 0x100000>; no-map; }};
+        m3@4e800000 {{ reg = <0 0x4e800000 0 0x100000>; no-map; }};
+    }};
     soc {{
         #address-cells = <1>; #size-cells = <1>; ranges;
+        wifi@c0000000 {{
+            compatible = "qcom,ipq8074-wifi"; reg = <0xc000000 0x2000000>;
+            status = "{'okay' if wireless else 'disabled'}";
+            qcom,ath11k-fw-memory-mode = <1>;
+            qcom,ath11k-calibration-variant = "OPPO-CKB01";
+        }};
         mdio@90000 {{
             reg = <0x90000 0x64>;
             #address-cells = <1>; #size-cells = <0>;
@@ -110,9 +145,10 @@ class Ckb01FitTests(unittest.TestCase):
         subprocess.run(["mkimage", "-f", str(self.work / "image.its"), str(self.source)],
                        cwd=self.work, check=True, capture_output=True)
 
-    def package(self):
+    def package(self, wireless=False):
         return subprocess.run([sys.executable, str(PACKAGER), str(self.source),
-                               "--initramfs", str(self.initramfs), "--output", str(self.work / "out")],
+                               "--initramfs", str(self.initramfs), "--output", str(self.work / "out"),
+                               *(["--wireless"] if wireless else [])],
                               text=True, capture_output=True)
 
     def test_valid_image_has_identical_usb_alias_and_boot_configurations(self):
@@ -162,6 +198,29 @@ class Ckb01FitTests(unittest.TestCase):
         result = self.package()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("PHY", result.stderr)
+
+    def test_wireless_image_has_matching_board_data_and_runtime(self):
+        self.make_fit(wireless=True)
+        result = self.package(wireless=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_wireless_checks_reject_a_wired_image(self):
+        self.make_fit()
+        result = self.package(wireless=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("wireless", result.stderr.lower())
+
+    def test_other_board_data_is_never_published(self):
+        self.make_fit(wireless=True, bad_bdf=True)
+        result = self.package(wireless=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("BDF", result.stderr)
+
+    def test_missing_firmware_segment_is_never_published(self):
+        self.make_fit(wireless=True, missing_segment=True)
+        result = self.package(wireless=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("q6_fw.b08", result.stderr)
 
 
 if __name__ == "__main__":

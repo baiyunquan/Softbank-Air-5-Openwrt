@@ -26,6 +26,28 @@ capture network ubus call network.interface dump
 capture uci-network uci export network
 capture uci-firewall uci export firewall
 capture mac-source cat /tmp/ckb01-mac-source
+capture wifi-setup cat /tmp/ckb01-wifi.status
+capture wifi-caldata cat /tmp/ckb01-caldata.status
+capture wireless ubus call network.wireless status
+capture uci-wireless uci export wireless
+capture iw-phy iw phy
+capture iw-dev iw dev
+capture iw-reg iw reg get
+capture iwinfo iwinfo
+capture wifi-fw-version cat /lib/firmware/IPQ8074/fw_version.txt
+capture wifi-bdf-sha256 sha256sum /lib/firmware/ath11k/IPQ8074/hw2.0/board-2.bin
+for interface in $(iw dev 2>/dev/null | awk '$1 == "Interface" {print $2}'); do
+	capture "wifi-stations-$interface" iw dev "$interface" station dump
+	capture "hostapd-$interface" ubus call "hostapd.$interface" get_status
+	capture "hostapd-clients-$interface" ubus call "hostapd.$interface" get_clients
+done
+{
+	for device in /sys/class/remoteproc/*; do
+		[ -d "$device" ] || continue
+		printf '\n%s\n' "$device"
+		cat "$device/name" "$device/firmware" "$device/state" 2>/dev/null || true
+	done
+} >"$work/remoteproc.txt"
 for interface in lan wan; do
 	capture "ethtool-$interface" ethtool "$interface"
 	capture "ethtool-stats-$interface" ethtool -S "$interface"

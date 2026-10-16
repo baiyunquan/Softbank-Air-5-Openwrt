@@ -1,0 +1,81 @@
+#!/bin/sh
+# shellcheck shell=busybox
+# One-shot RAM-root provisioning. The procd caller enforces a 120 second deadline.
+set -u
+. /lib/functions/system.sh
+. /lib/functions/ckb01-wifi.sh
+
+[ "$(board_name)" = 'oppo,ckb01' ] || exit 0
+work=$(mktemp -d /tmp/ckb01-wifi.XXXXXX) || exit 1
+state=/tmp/ckb01-wifi.status
+trap 'rm -rf "$work"' EXIT
+trap 'printf "status=failed\nreason=initialization interrupted or timed out\n" >"$state"; exit 1' HUP INT TERM
+printf 'status=waiting\n' >"$state"
+
+phy_for_band() {
+	local band=$1
+	local phy
+	for phy in /sys/class/ieee80211/*; do
+		[ -r "$phy/macaddress" ] || continue
+		iw phy "${phy##*/}" info >"$work/${phy##*/}.info" 2>/dev/null || continue
+		case "$band" in
+			2g) grep -q '\* 24[0-9][0-9] MHz' "$work/${phy##*/}.info" || continue ;;
+			5g) grep -q '\* 5[0-9][0-9][0-9] MHz' "$work/${phy##*/}.info" || continue ;;
+		esac
+		printf '%s\n' "${phy##*/}"
+		return 0
+	done
+	return 1
+}
+
+ckb01_wifi_try() {
+	local radios radio device band phy candidate seed used mac source
+	grep -qx 'status=ready' /tmp/ckb01-caldata.status 2>/dev/null || {
+		echo 'waiting for validated ART calibration' >&2; return 1;
+	}
+	/sbin/wifi config || return 1
+	radios=$(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p')
+	: >"$work/radios"
+	for band in 2g 5g; do
+		phy=$(phy_for_band "$band") || { echo "waiting for $band PHY" >&2; return 1; }
+		radio=
+		for device in $radios; do
+			[ "$(uci -q get "wireless.$device.band")" = "$band" ] || continue
+			radio=$device
+			break
+		done
+		[ -n "$radio" ] || { echo "waiting for $band UCI device" >&2; return 1; }
+		printf '%s %s %s\n' "$radio" "$phy" "$band" >>"$work/radios"
+	done
+	seed=$(sed -n 's/^art_sha256=//p' /tmp/ckb01-caldata.status)
+	[ -n "$seed" ] || return 1
+	used="$(uci -q get network.lan.macaddr) $(uci -q get network.wan.macaddr)"
+	: >"$work/mac-sources"
+	while read -r radio phy band; do
+		candidate=$(cat "/sys/class/ieee80211/$phy/macaddress")
+		ckb01_wifi_configure_radio "$radio" "$phy" "$band" "$work/$phy.info" "$candidate" "$seed" "$used" || return 1
+		mac=$(uci -q get "wireless.ckb01_$band.macaddr")
+		used="$used $mac"
+		source=ART-sha256-derived-or-user-configured
+		[ "$candidate" != "$mac" ] || source=driver
+		printf '%s: phy=%s device=%s driver_mac=%s ap_mac=%s source=%s\n' "$band" "$phy" "$radio" "$candidate" "$mac" "$source" >>"$work/mac-sources"
+	done <"$work/radios"
+	/sbin/wifi reload || return 1
+	{
+		printf 'status=configured\nhardware_validation=pending\n'
+		cat "$work/mac-sources"
+	} >"$state"
+	logger -t ckb01-wifi 'Dual-band AP configuration applied; verify hostapd and client connectivity'
+	return 0
+}
+
+# Country is set before reading the allowed channel list. Firmware restrictions apply.
+iw reg set CN || true
+if ! ckb01_wifi_wait 60 2>"$work/errors"; then
+	{
+		printf 'status=failed\nreason=dual-band initialization deadline reached\n'
+		tail -5 "$work/errors"
+	} >"$state"
+	logger -t ckb01-wifi "$(cat "$state")"
+	exit 1
+fi

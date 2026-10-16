@@ -3,16 +3,19 @@ name: Build CKB01 USB initramfs
 on:
   workflow_dispatch:
   push:
-    branches: [main, ckb01-usb-bringup]
+    branches: [main, ckb01-usb-bringup, ckb01-ath11k-bringup]
     paths:
       - '.github/workflows/build-ckb01.yml'
       - 'devices/common-bringup/**'
       - 'devices/oppo_ckb01/**'
       - 'patches/tree/ckb01/**'
       - 'scripts/ckb01-fit.py'
-      - 'scripts/tests/test_ckb01_fit.py'
+      - 'scripts/ckb01-bdf.py'
+      - 'scripts/tests/test_ckb01_*.py'
+      - 'tools/ath11k-bdencoder'
       - 'scripts/prepare-build.sh'
       - 'docs/CKB01_USB_BRINGUP.md'
+      - 'docs/CKB01_WIFI_PORTING.md'
 
 permissions:
   contents: read
@@ -48,13 +51,15 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential bison flex gawk gettext git glibc-source \
             libncurses-dev libssl-dev python3 rsync swig unzip wget \
-            zlib1g-dev zstd u-boot-tools device-tree-compiler cpio file
+            zlib1g-dev zstd u-boot-tools device-tree-compiler cpio file bsdextrautils
           mkdir -p logs artifacts
           df -h .
 
-      - name: Test FIT validation and USB packaging
+      - name: Check OEM BDF, calibration helpers and FIT validation
         working-directory: builder
-        run: python3 -m unittest discover -s scripts/tests -p 'test_ckb01_fit.py' -v
+        run: |
+          python3 scripts/ckb01-bdf.py --check
+          python3 -m unittest discover -s scripts/tests -p 'test_ckb01_*.py' -v
 
       - name: Checkout pinned OpenWrt source
         uses: actions/checkout@v7
@@ -91,10 +96,12 @@ jobs:
           assert 'CONFIG_TARGET_MULTI_PROFILE=y' not in lines
           assert 'CONFIG_TARGET_PER_DEVICE_ROOTFS=y' not in lines
           for symbol in ('TARGET_ROOTFS_INITRAMFS', 'TARGET_INITRAMFS_COMPRESSION_ZSTD',
-                         'PACKAGE_kmod-mhi-pci-generic', 'PACKAGE_kmod-mhi-wwan-ctrl'):
+                         'PACKAGE_kmod-mhi-pci-generic', 'PACKAGE_kmod-mhi-wwan-ctrl',
+                         'PACKAGE_kmod-ath11k-ahb', 'PACKAGE_ath11k-firmware-ipq8074',
+                         'PACKAGE_wpad-basic-mbedtls', 'PACKAGE_iw', 'PACKAGE_iwinfo',
+                         'PACKAGE_wireless-regdb'):
               assert f'CONFIG_{symbol}=y' in lines, f'Missing {symbol}'
-          for symbol in ('PACKAGE_kmod-ath11k-ahb', 'PACKAGE_ath11k-firmware-ipq8074',
-                         'PACKAGE_kmod-nss-wifi-drv', 'ATH11K_NSS_WIFI'):
+          for symbol in ('PACKAGE_kmod-nss-wifi-drv', 'ATH11K_NSS_WIFI'):
               assert f'CONFIG_{symbol}=y' not in lines, f'Unexpected {symbol}'
           PY
           {
@@ -149,9 +156,11 @@ jobs:
           [[ ${#fits[@]} -eq 1 ]] || { echo 'Expected exactly one CKB01 initramfs FIT' >&2; exit 1; }
           [[ ${#ramdisks[@]} -eq 1 ]] || { echo 'Expected exactly one compiled initramfs archive' >&2; exit 1; }
           python3 builder/scripts/ckb01-fit.py "${fits[0]}" \
-            --initramfs "${ramdisks[0]}" --output artifacts | tee logs/fit-validation.log
+            --initramfs "${ramdisks[0]}" --wireless --output artifacts | tee logs/fit-validation.log
           cp logs/source-versions.txt logs/config.buildinfo artifacts/
           cp builder/docs/CKB01_USB_BRINGUP.md artifacts/README.md
+          cp builder/docs/CKB01_WIFI_PORTING.md artifacts/
+          cp builder/devices/oppo_ckb01/firmware/provenance.json artifacts/bdf-provenance.json
           find openwrt/bin/targets/qualcommax/ipq807x -maxdepth 1 -type f \
             \( -name '*.manifest' -o -name '*.buildinfo' -o -name 'profiles.json' \) \
             -exec cp {} artifacts/ \;
@@ -165,6 +174,7 @@ jobs:
             # shellcheck disable=SC2016
             echo '- USB filename: `uimage-initramfs.itb`'
             echo '- LAN1: DHCP WAN; LAN2: management at 192.168.5.1'
+            echo '- APs: Air5-2G / Air5-5G; key Air5-OpenWrt; calibration read from unit ART'
             echo '- RAM root; hardware validation pending.'
             cat artifacts/fit-report.json
           } >> "$GITHUB_STEP_SUMMARY"

@@ -17,8 +17,10 @@ not establish that the physical ports or SDX55 have passed hardware tests.
 - Port placement is an initial hypothesis: switch port1/PHY8 = LAN2;
   switch port2/PHY9 = LAN1. Confirm this with cable insertion/carrier tests.
   If management does not appear on LAN2, inspect both ports from serial.
-- Wi-Fi, NSS Wi-Fi acceleration and automatic cellular sessions are disabled.
-  PCIe/MHI and USB storage modules are included for investigation.
+- The ath11k branch provisions `Air5-2G` / `Air5-5G` after validating the
+  unit's ART (WPA2 AES key `Air5-OpenWrt`, country CN, HE20/HE80).
+  NSS Wi-Fi acceleration and automatic cellular sessions remain disabled.
+  See [wireless implementation and evidence](CKB01_WIFI_PORTING.md).
 
 For manual recovery boot, enumerate `usb storage` and inspect `fatls` first.
 For example, **only if the external drive is device 0, partition 1**:
@@ -48,8 +50,10 @@ packager rejects a kernel footprint that reaches the FIT buffer at `0x44000000`.
 - SPI NOR uses SMEM partition parsing. Locate ART by `0:ART`/`ART` label,
   never by a fixed MTD number. The OEM partition table describes ART at
   `0x2a0000`, length `0x40000` (262144 bytes).
-- No Haze/Deco BDF, caldata offsets or modem power/reset GPIOs are reused.
-  Wi-Fi stays disabled until Air 5 calibration layout is established.
+- The original Air 5 `read_caldata_to_fs.sh` establishes ART offset `0x1000`
+  and length `0x20000`; the image reads and validates this slice at runtime.
+  The original Air 5 BDF is packaged as variant `OPPO-CKB01`. Actual radio
+  operation remains pending hardware validation.
 - Valid bootloader MACs are preserved. Otherwise MACs derive from the unit's
   ART digest, then its SoC serial; without either identity they are temporary
   random locally administered addresses. `/tmp/ckb01-mac-source` records this.
@@ -85,7 +89,7 @@ The dedicated **Build CKB01 USB initramfs** workflow builds one board on
 `COMMON=common-bringup`, `DEVICE=oppo_ckb01`, `VARIANT=ckb01` with the existing
 preparation script. It does not use the general release matrix or NSS feed.
 
-CI checks the selected profile and disabled wireless packages, tests the FIT
+CI checks the selected profile, required ath11k packages and disabled NSS Wi-Fi, tests the FIT
 packager, compiles firmware and validates both payload hashes, embedded board
 identity, memory layout, port-to-PHY bindings and required initramfs contents.
 The supplied compiled CPIO must occur inside the decompressed kernel bytes.
@@ -95,3 +99,7 @@ run. It contains both image names, DTB/DTS, `fit-report.json`, the initramfs
 file list, configuration, manifests, feed revisions and checksums. Artifacts
 and build logs are retained for 30 days. Until hardware testing, the image is
 explicitly **pending hardware validation**.
+
+On `ckb01-ath11k-bringup`, CI additionally checks BDF reproducibility, the
+wireless helpers, and the actual initramfs/DTB using `ckb01-fit.py --wireless`.
+The historical `ckb01-usb-bringup` commits contain the wired-only image.

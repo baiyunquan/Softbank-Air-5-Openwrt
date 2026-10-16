@@ -1,0 +1,10 @@
+[
+  {
+    "board": [
+      {
+        "names": ["bus=ahb,qmi-chip-id=0,qmi-board-id=255,variant=OPPO-CKB01"],
+        "data": "bdwlan.bin"
+      }
+    ]
+  }
+]
