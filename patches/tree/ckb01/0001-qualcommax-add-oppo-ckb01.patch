@@ -3,11 +3,11 @@ Subject: [PATCH] qualcommax: add OPPO CKB01 USB initramfs bring-up
 Base: JuliusBairaktaris/openwrt-ppe-nss a0d3cabc052f9c3c19a0abe2b2633195f703bccc
 
 Add a RAM-only board profile with two PSGMII ports and PCIe/MHI.
-Physical port placement and PHY reset GPIOs require hardware verification.
+Use the hardware-verified GPIO37 PHY reset and LAN1/LAN2 port mapping.
 
 diff --git a/target/linux/qualcommax/dts/ipq8072-ckb01.dts b/target/linux/qualcommax/dts/ipq8072-ckb01.dts
 new file mode 100644
-index 0000000..ee96b9d
+index 0000000..4930994
 --- /dev/null
 +++ b/target/linux/qualcommax/dts/ipq8072-ckb01.dts
 @@ -0,0 +1,220 @@
@@ -29,8 +29,8 @@ index 0000000..ee96b9d
 +
 +	aliases {
 +		serial0 = &blsp1_uart5;
-+		ethernet0 = &swport2;
-+		ethernet1 = &swport1;
++		ethernet0 = &swport1;
++		ethernet1 = &swport2;
 +		led-boot = &led_status_green;
 +		led-running = &led_status_green;
 +		led-failsafe = &led_status_red;
@@ -138,7 +138,7 @@ index 0000000..ee96b9d
 +	status = "okay";
 +	pinctrl-0 = <&mdio_pins>;
 +	pinctrl-names = "default";
-+	/* Preserve OEM GPIO levels; the stock reset GPIO list is ambiguous. */
++	reset-gpios = <&tlmm 37 GPIO_ACTIVE_LOW>;
 +	ethernet-phy-package@8 {
 +		compatible = "qcom,qca8075-package";
 +		reg = <8>;
@@ -179,19 +179,19 @@ index 0000000..ee96b9d
 +			};
 +		};
 +
-+		/* Initial physical mapping: LAN2 -> port1; confirm on hardware. */
++		/* Physical LAN1 is switch port1 / PHY8 and serves as WAN. */
 +		swport1: port@1 {
 +			reg = <1>;
-+			label = "lan";
++			label = "wan";
 +			phy-handle = <&phy8>;
 +			phy-mode = "psgmii";
 +			pcs-handle = <&uniphy0 0>;
 +		};
 +
-+		/* Initial physical mapping: LAN1 -> port2; confirm on hardware. */
++		/* Physical LAN2 is switch port2 / PHY9 and serves as LAN. */
 +		swport2: port@2 {
 +			reg = <2>;
-+			label = "wan";
++			label = "lan";
 +			phy-handle = <&phy9>;
 +			phy-mode = "psgmii";
 +			pcs-handle = <&uniphy0 1>;

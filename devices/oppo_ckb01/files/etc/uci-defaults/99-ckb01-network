@@ -13,19 +13,20 @@ valid_mac() {
 }
 
 dt_mac() {
-	file="/sys/firmware/devicetree/base/soc/ppe@3a000000/ports/port@$1/local-mac-address"
+	file="/sys/firmware/devicetree/base/soc@0/ppe@3a000000/ports/port@$1/local-mac-address"
 	[ -r "$file" ] || return 1
 	hexdump -v -e '6/1 "%02x:"' "$file" | sed 's/:$//'
 }
 
-wan_mac=$(dt_mac 2)
-lan_mac=$(dt_mac 1)
+wan_mac=$(dt_mac 1)
+lan_mac=$(dt_mac 2)
 source=bootloader
 if ! valid_mac "$wan_mac"; then
 	if valid_mac "$lan_mac"; then
 		wan_mac=$(macaddr_add "$lan_mac" 1)
 	else
-		art=$(find_mtd_chardev '0:ART')
+		art=$(find_mtd_chardev '0:art')
+		[ -n "$art" ] || art=$(find_mtd_chardev '0:ART')
 		[ -n "$art" ] || art=$(find_mtd_chardev ART)
 		if [ -n "$art" ] && [ -r "$art" ]; then
 			seed=$(sha256sum "$art" | awk '{print $1}')
@@ -64,5 +65,5 @@ commit firewall
 commit system
 EOF
 printf 'source=%s\nwan=%s\nlan=%s\n' "$source" "$wan_mac" "$lan_mac" >/tmp/ckb01-mac-source
-logger -t ckb01 "MAC source: $source; LAN1=wan, LAN2=lan (physical mapping pending verification)"
+logger -t ckb01 "MAC source: $source; physical LAN1=wan, LAN2=lan"
 exit 0

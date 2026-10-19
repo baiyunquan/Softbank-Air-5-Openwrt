@@ -3,7 +3,7 @@ name: Build CKB01 USB initramfs
 on:
   workflow_dispatch:
   push:
-    branches: [main, ckb01-usb-bringup, ckb01-ath11k-bringup]
+    branches: [main, ckb01-usb-bringup, ckb01-ath11k-bringup, ckb01-usb-default-packaging]
     paths:
       - '.github/workflows/build-ckb01.yml'
       - 'devices/common-bringup/**'
