@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package the validated CKB01 FIT in an MBR/FAT16 USB disk image, without root."""
+"""Package a CKB01 FIT in an MBR/FAT16 USB image and verify the disk layout."""
 
 import argparse
 import hashlib
@@ -124,7 +124,8 @@ def package(fit, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("fit", type=Path, help="CKB01 FIT already validated by ckb01-fit.py")
+    parser.add_argument("fit", type=Path,
+                        help="CKB01 FIT to include; the workflow may use raw FIT when validation fails")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:

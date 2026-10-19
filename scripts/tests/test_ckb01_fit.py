@@ -117,8 +117,8 @@ class Ckb01FitTests(unittest.TestCase):
             reg = <0x3a000000 0x900000>;
             ports {{
                 #address-cells = <1>; #size-cells = <0>;
-                port@1 {{ reg = <1>; label = "lan"; phy-mode = "psgmii"; phy-handle = <&{phy}>; }};
-                port@2 {{ reg = <2>; label = "wan"; phy-mode = "psgmii"; phy-handle = <&phy9>; }};
+                port@1 {{ reg = <1>; label = "wan"; phy-mode = "psgmii"; phy-handle = <&{phy}>; }};
+                port@2 {{ reg = <2>; label = "lan"; phy-mode = "psgmii"; phy-handle = <&phy9>; }};
             }};
         }};
     }};

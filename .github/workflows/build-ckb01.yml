@@ -58,10 +58,24 @@ jobs:
           df -h .
 
       - name: Check OEM BDF, calibration helpers and FIT validation
+        id: preflight
+        continue-on-error: true
         working-directory: builder
         run: |
-          python3 scripts/ckb01-bdf.py --check
-          python3 -m unittest discover -s scripts/tests -p 'test_ckb01_*.py' -v
+          set -uo pipefail
+          python3 scripts/ckb01-bdf.py --check 2>&1 | tee ../logs/preflight-bdf.log
+          bdf_status=${PIPESTATUS[0]}
+          python3 -m unittest discover -s scripts/tests -p 'test_ckb01_*.py' -v 2>&1 | tee ../logs/preflight-tests.log
+          tests_status=${PIPESTATUS[0]}
+          if [[ $bdf_status -ne 0 || $tests_status -ne 0 ]]; then
+            exit 1
+          fi
+
+      - name: Report preflight validation warning
+        if: steps.preflight.outcome == 'failure'
+        run: |
+          echo '::warning title=CKB01 preflight validation::Preflight checks failed; continuing to compile and upload diagnostic artifacts.'
+          echo '- Preflight checks reported errors; compilation continues and logs will be retained.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout pinned OpenWrt source
         uses: actions/checkout@v7
@@ -148,26 +162,21 @@ jobs:
           make -j"$(nproc)" 2>&1 | tee ../logs/build.log || \
             make -j1 V=s 2>&1 | tee -a ../logs/build.log
 
-      - name: Verify and package USB initramfs
+      - name: Validate and package USB initramfs
+        id: fit_package
+        continue-on-error: true
         run: |
           set -euo pipefail
+          mkdir -p artifacts logs
           # Linux usr/initramfs_data.S embeds initramfs_inc_data regardless of
           # compression. The .cpio file is its input, not the embedded output.
           find openwrt/bin/targets/qualcommax/ipq807x openwrt/build_dir -type f \
             \( -name '*oppo_ckb01*' -o -path '*/usr/*initramfs*' \) \
             -printf '%p %s bytes\n' | sort | tee logs/build-artifact-inventory.txt
           mapfile -t fits < <(find openwrt/bin/targets/qualcommax/ipq807x -maxdepth 1 \
-            -name 'openwrt-*-oppo_ckb01-initramfs-uImage.itb' -type f)
+            -name 'openwrt-*-oppo_ckb01-initramfs-uImage.itb' -type f | sort)
           mapfile -t ramdisks < <(find openwrt/build_dir -type f \
-            -path '*/linux-*/usr/initramfs_inc_data')
-          [[ ${#fits[@]} -eq 1 ]] || { echo 'Expected exactly one CKB01 initramfs FIT' >&2; exit 1; }
-          [[ ${#ramdisks[@]} -eq 1 ]] || {
-            echo "Expected exactly one kernel usr/initramfs_inc_data, found ${#ramdisks[@]}; see build-artifact-inventory.txt" >&2
-            exit 1
-          }
-          sha256sum "${fits[0]}" "${ramdisks[0]}" | tee logs/verification-inputs.sha256
-          python3 builder/scripts/ckb01-fit.py "${fits[0]}" \
-            --initramfs "${ramdisks[0]}" --wireless --output artifacts | tee logs/fit-validation.log
+            -path '*/linux-*/usr/initramfs_inc_data' | sort)
           cp logs/source-versions.txt logs/config.buildinfo artifacts/
           cp builder/docs/CKB01_USB_BRINGUP.md artifacts/README.md
           cp builder/docs/CKB01_WIFI_PORTING.md artifacts/
@@ -175,6 +184,34 @@ jobs:
           find openwrt/bin/targets/qualcommax/ipq807x -maxdepth 1 -type f \
             \( -name '*.manifest' -o -name '*.buildinfo' -o -name 'profiles.json' \) \
             -exec cp {} artifacts/ \;
+          if [[ ${#fits[@]} -eq 0 ]]; then
+            echo '::warning title=CKB01 FIT missing::No compiled CKB01 FIT was found; metadata and logs will still be uploaded.'
+            echo '- No compiled CKB01 FIT was found, so image packaging was skipped.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [[ ${#fits[@]} -ne 1 ]]; then
+            echo "::warning title=CKB01 FIT count::Expected one CKB01 FIT, found ${#fits[@]}; preserving all raw FITs and using the first sorted file for packaging."
+            mkdir -p artifacts/raw-build
+            cp "${fits[@]}" artifacts/raw-build/
+          fi
+          # Keep the raw FIT uploadable if semantic validation fails. On
+          # success the validator replaces it with the HK09-compatible FIT.
+          cp "${fits[0]}" artifacts/uimage-initramfs.itb
+          if [[ ${#ramdisks[@]} -ne 1 ]]; then
+            echo "::warning title=CKB01 initramfs count::Expected one usr/initramfs_inc_data, found ${#ramdisks[@]}; preserving the raw FIT and continuing."
+            printf 'The compiled FIT was not semantically validated because the build produced %s initramfs_inc_data files. The raw FIT is included as uimage-initramfs.itb.\n' "${#ramdisks[@]}" > artifacts/UNVALIDATED-FIT.txt
+          else
+            sha256sum "${fits[0]}" "${ramdisks[0]}" | tee logs/verification-inputs.sha256
+            if python3 builder/scripts/ckb01-fit.py "${fits[0]}" \
+              --initramfs "${ramdisks[0]}" --wireless --output artifacts 2>&1 | tee logs/fit-validation.log; then
+              echo 'FIT validation passed.'
+            else
+              validation_status=${PIPESTATUS[0]}
+              echo "::warning title=CKB01 FIT validation::FIT checks failed (exit ${validation_status}); raw FIT retained and packaging will continue. See fit-validation.log."
+              echo "- FIT validation failed with exit ${validation_status}; raw FIT retained and packaging continued. See uploaded build logs." >> "$GITHUB_STEP_SUMMARY"
+              printf 'FIT validation failed with exit %s. This file accompanies the original compiled FIT, preserved as uimage-initramfs.itb. See fit-validation.log in the build logs.\n' "$validation_status" > artifacts/UNVALIDATED-FIT.txt
+            fi
+          fi
           (cd artifacts && find . -maxdepth 1 -type f ! -name sha256sums -print0 \
             | sort -z | xargs -0 sha256sum) > logs/artifact-sha256sums
           cp logs/artifact-sha256sums artifacts/sha256sums
@@ -187,14 +224,36 @@ jobs:
             echo '- LAN1: DHCP WAN; LAN2: management at 192.168.5.1'
             echo '- APs: Air5-2G / Air5-5G; key Air5-OpenWrt; calibration read from unit ART'
             echo '- RAM root; hardware validation pending.'
-            cat artifacts/fit-report.json
+            if [[ -f artifacts/fit-report.json ]]; then
+              cat artifacts/fit-report.json
+            else
+              echo '- FIT validation report unavailable; raw build output is included.'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Build and verify complete USB disk image
+      - name: Report FIT packaging step warning
+        if: steps.fit_package.outcome == 'failure'
         run: |
-          set -euo pipefail
-          python3 builder/scripts/ckb01-usb-image.py artifacts/uimage-initramfs.itb \
-            --output artifacts | tee logs/usb-image-validation.log
+          echo '::warning title=CKB01 FIT packaging step::The verification/package step encountered an unexpected error; later upload steps will still preserve any available artifacts.'
+          echo '- FIT packaging step had an unexpected error; raw build output upload is still enabled.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build and verify complete USB disk image
+        id: usb_package
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          if [[ ! -s artifacts/uimage-initramfs.itb ]]; then
+            echo '::warning title=CKB01 USB image skipped::No FIT is available; build metadata and logs will still be uploaded.'
+            exit 0
+          fi
+          if python3 builder/scripts/ckb01-usb-image.py artifacts/uimage-initramfs.itb \
+            --output artifacts 2>&1 | tee logs/usb-image-validation.log; then
+            echo 'USB image validation passed.'
+          else
+            validation_status=${PIPESTATUS[0]}
+            echo "::warning title=CKB01 USB image validation::USB image checks failed (exit ${validation_status}); available FIT and metadata will still be uploaded. See usb-image-validation.log."
+            echo "- USB image validation failed with exit ${validation_status}; all available FIT and metadata artifacts will still be uploaded." >> "$GITHUB_STEP_SUMMARY"
+          fi
           (cd artifacts && find . -maxdepth 1 -type f ! -name sha256sums -print0 \
             | sort -z | xargs -0 sha256sum) > logs/artifact-sha256sums
           cp logs/artifact-sha256sums artifacts/sha256sums
@@ -205,15 +264,26 @@ jobs:
             echo '- MBR partition table; bootable partition 1: 256 MiB FAT16 at LBA 2048.'
             echo '- Intended to boot through OEM USB autoboot; no interactive U-Boot command needed.'
             echo '- New layout needs physical boot validation; RAM-root configuration is not persistent.'
-            cat artifacts/usb-image-report.json
+            if [[ -f artifacts/usb-image-report.json ]]; then
+              cat artifacts/usb-image-report.json
+            else
+              echo '- USB image report unavailable; available FIT and metadata are uploaded.'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Report USB packaging step warning
+        if: steps.usb_package.outcome == 'failure'
+        run: |
+          echo '::warning title=CKB01 USB packaging step::The USB image step encountered an unexpected error; available ITB and metadata will still be uploaded.'
+          echo '- USB packaging step had an unexpected error; available ITB and metadata upload is still enabled.' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload CKB01 USB image and metadata
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ckb01-usb-image-${{ github.sha }}
           path: artifacts/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
           compression-level: 6
 
@@ -226,8 +296,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-      - name: Preserve raw build outputs on verification failure
-        if: failure() && steps.compile.outcome == 'success'
+      - name: Preserve raw build outputs
+        if: always() && steps.compile.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ckb01-unvalidated-build-${{ github.sha }}

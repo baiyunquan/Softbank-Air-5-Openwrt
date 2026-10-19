@@ -113,7 +113,7 @@ def verify_board(dtb, wireless=False):
     require(prop(dtb, "/", "qcom,board-id", "x") == [8, 0], "unexpected CKB01 board ID")
     require(prop(dtb, "/memory@40000000", "reg", "x") == [0, 0x40000000, 0, 0x20000000],
             "CKB01 DT does not describe 512 MiB RAM")
-    for port, label, address in ((1, "lan", 8), (2, "wan", 9)):
+    for port, label, address in ((1, "wan", 8), (2, "lan", 9)):
         node = f"/soc/ppe@3a000000/ports/port@{port}"
         phy = f"/soc/mdio@90000/ethernet-phy-package@8/ethernet-phy@{address:x}"
         require(prop(dtb, node, "label") == label, f"port{port} has the wrong network role")
