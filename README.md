@@ -1,11 +1,14 @@
 # Qualcommax NSS Builder
 
 This fork also contains a dedicated [OPPO CKB01 / SoftBank Air 5 USB
-bring-up image](docs/CKB01_USB_BRINGUP.md), built by the **Build CKB01 USB
-initramfs** workflow. Its complete `air5-ckb01-usb.img` supplies an MBR and
-FAT16 primary partition 1 for the OEM automatic USB boot path, without an
-interactive U-Boot command. It uses RAM root, LAN1 as DHCP WAN and LAN2 for
-management at `192.168.5.1`; hardware validation is pending.
+bring-up image](docs/CKB01_USB_BRINGUP.md). The separate **Package CKB01
+default-boot USB** workflow reuses the successful compiled FIT to produce
+[`air5-ckb01-usb-default-v2.img`](docs/CKB01_USB_DEFAULT_IMAGE.md): whole-device
+FAT16 at LBA 0 with `/uImage-initramfs.itb`, matching the analyzed OEM
+`fatload usb 0:0` default path. It performs no firmware compilation. The
+earlier MBR image targets a first-partition loading path. Both use RAM root,
+LAN1 as DHCP WAN and LAN2 for management at `192.168.5.1`; hardware validation
+and identification of the target unit's bootloader version are pending.
 
 ### Prebuilt OpenWrt firmware with Qualcomm NSS hardware offload for IPQ807x and IPQ60xx (IPQ6018) routers
 
