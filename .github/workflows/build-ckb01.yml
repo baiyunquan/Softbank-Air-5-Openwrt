@@ -10,6 +10,7 @@ on:
       - 'devices/oppo_ckb01/**'
       - 'patches/tree/ckb01/**'
       - 'scripts/ckb01-fit.py'
+      - 'scripts/ckb01-usb-image.py'
       - 'scripts/ckb01-bdf.py'
       - 'scripts/tests/test_ckb01_*.py'
       - 'tools/ath11k-bdencoder'
@@ -51,7 +52,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential bison flex gawk gettext git glibc-source \
             libncurses-dev libssl-dev python3 rsync swig unzip wget \
-            zlib1g-dev zstd u-boot-tools device-tree-compiler cpio file bsdextrautils
+            zlib1g-dev zstd u-boot-tools device-tree-compiler cpio file bsdextrautils \
+            dosfstools mtools fdisk
           mkdir -p logs artifacts
           df -h .
 
@@ -188,14 +190,32 @@ jobs:
             cat artifacts/fit-report.json
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Build and verify complete USB disk image
+        run: |
+          set -euo pipefail
+          python3 builder/scripts/ckb01-usb-image.py artifacts/uimage-initramfs.itb \
+            --output artifacts | tee logs/usb-image-validation.log
+          (cd artifacts && find . -maxdepth 1 -type f ! -name sha256sums -print0 \
+            | sort -z | xargs -0 sha256sum) > logs/artifact-sha256sums
+          cp logs/artifact-sha256sums artifacts/sha256sums
+          {
+            echo '## Complete USB disk image'
+            # shellcheck disable=SC2016
+            echo '- Write `air5-ckb01-usb.img` to the whole USB drive, not a partition.'
+            echo '- MBR partition table; bootable partition 1: 256 MiB FAT16 at LBA 2048.'
+            echo '- Intended to boot through OEM USB autoboot; no interactive U-Boot command needed.'
+            echo '- New layout needs physical boot validation; RAM-root configuration is not persistent.'
+            cat artifacts/usb-image-report.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload CKB01 USB image and metadata
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ckb01-usb-initramfs-${{ github.sha }}
+          name: ckb01-usb-image-${{ github.sha }}
           path: artifacts/
           if-no-files-found: error
           retention-days: 30
-          compression-level: 0
+          compression-level: 6
 
       - name: Upload build logs
         if: always()

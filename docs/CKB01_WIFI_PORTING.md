@@ -4,8 +4,10 @@
 
 这是 USB FIT/initramfs 无线适配首版。代码检查和编译不能证明实机启动、
 无线校准、射频或终端联网成功；这些项目均为 **pending hardware validation**。
-保留原厂 U-Boot 和现有外插 U 盘启动方式；将产物 `uimage-initramfs.itb`
-放到已验证的 FAT 启动文件系统根目录。配置位于 RAM，重启恢复镜像默认值。
+保留原厂 U-Boot，将 Actions 产物 `air5-ckb01-usb.img` 整盘写入外插 U 盘，
+再插入断电的设备并通电。镜像提供 MBR、第 1 主分区 FAT16 及根目录的
+`uimage-initramfs.itb`，供原厂 USB 启动流程自动加载，无需进入 U-Boot。
+新分区布局的自动启动仍待实机确认。配置位于 RAM，重启恢复镜像默认值。
 
 | 项目 | 2.4GHz | 5GHz |
 |---|---|---|

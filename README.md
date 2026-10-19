@@ -2,7 +2,9 @@
 
 This fork also contains a dedicated [OPPO CKB01 / SoftBank Air 5 USB
 bring-up image](docs/CKB01_USB_BRINGUP.md), built by the **Build CKB01 USB
-initramfs** workflow. It uses RAM root, LAN1 as DHCP WAN and LAN2 for
+initramfs** workflow. Its complete `air5-ckb01-usb.img` supplies an MBR and
+FAT16 primary partition 1 for the OEM automatic USB boot path, without an
+interactive U-Boot command. It uses RAM root, LAN1 as DHCP WAN and LAN2 for
 management at `192.168.5.1`; hardware validation is pending.
 
 ### Prebuilt OpenWrt firmware with Qualcomm NSS hardware offload for IPQ807x and IPQ60xx (IPQ6018) routers

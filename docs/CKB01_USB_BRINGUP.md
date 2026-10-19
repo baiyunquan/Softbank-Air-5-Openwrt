@@ -5,9 +5,11 @@ not establish that the physical ports or SDX55 have passed hardware tests.
 
 ## Boot and network defaults
 
-- Keep the working OEM U-Boot. Copy `uimage-initramfs.itb` into the root of the
-  external USB drive's already verified FAT boot filesystem. The long OpenWrt
-  image filename is an identical copy; check `sha256sums` after download.
+- Keep the working OEM U-Boot. Write the complete `air5-ckb01-usb.img` to the
+  **whole external USB drive**, then insert it while the Air 5 is powered off
+  and power on. No interactive U-Boot command is part of this procedure.
+  The image supplies an MBR partition table and a bootable primary partition 1
+  containing FAT16 and `/uimage-initramfs.itb`. Check `sha256sums` after download.
 - The FIT contains its own root filesystem. Configuration lives in RAM and
   resets to the image defaults after reboot. There is no flash installation or
   persistent USB-root procedure in this version.
@@ -22,7 +24,43 @@ not establish that the physical ports or SDX55 have passed hardware tests.
   NSS Wi-Fi acceleration and automatic cellular sessions remain disabled.
   See [wireless implementation and evidence](CKB01_WIFI_PORTING.md).
 
-For manual recovery boot, enumerate `usb storage` and inspect `fatls` first.
+### Complete IMG download and writing
+
+After a successful build, download `ckb01-usb-image-<builder SHA>` from Actions
+and unzip it. The file to write is **`air5-ckb01-usb.img`**, not the artifact ZIP
+or the standalone ITB. The disk image is 257 MiB: a 1 MiB MBR/alignment area
+followed by a 256 MiB FAT16 partition. Remaining USB capacity is unused.
+
+On Linux, identify the USB drive with `lsblk`, unmount its mounted partitions,
+then write the image (this erases the target drive's previous layout):
+
+```sh
+sha256sum -c sha256sums
+# Replace /dev/sdX with the USB whole disk, not /dev/sdX1.
+sudo wipefs --all /dev/sdX
+sudo dd if=air5-ckb01-usb.img of=/dev/sdX bs=4M status=progress conv=fsync
+sync
+```
+
+A raw disk image writer can also write this IMG in its disk-image mode.
+Do not format the drive again afterward. Eject it, insert it into the powered-off
+Air 5, and power on. The intended path is the existing OEM `bootipq_usb`
+automatic loader. The MBR layout still needs physical boot validation.
+
+The 2026-10-19 hardware log showed `** Invalid partition 1 **` only when the
+previous whole-device FAT16 USB was inserted, followed by the OEM
+`SBAir5, CKB01_11.B.003_291_202304012310` login. That boot did not run the new
+OpenWrt system. The former image had no MBR partition entries. The U-Boot
+2016 partition code emits this exact error when partition lookup fails;
+the new image provides an explicit partition 1 rather than relying on whole-disk
+FAT handling inferred from the SDX55 virtual disk. The FIT contents are unchanged.
+Successful new-kernel boot should identify Linux 6.18.55 / OpenWrt, rather than
+the OEM CLI. LTE attachment messages in the supplied log came from OEM firmware.
+
+### Optional manual recovery
+
+This is only for devices where the U-Boot console is accessible; it is not
+required by the intended automatic startup. Enumerate `usb storage` and inspect `fatls` first.
 For example, **only if the external drive is device 0, partition 1**:
 
 ```text
@@ -32,8 +70,8 @@ fatload usb 0:1 0x44000000 uimage-initramfs.itb
 bootm 0x44000000#config@1
 ```
 
-Use the actual device/partition from the working setup; it may be `0:0` on a
-filesystem without a partition table. `config@hk09` references the same kernel
+Use the actual USB device number; the supplied IMG always has partition 1.
+`config@hk09` references the same kernel
 and DTB as the default `config@1`. Kernel load/entry is `0x41000000`; the
 packager rejects a kernel footprint that reaches the FIT buffer at `0x44000000`.
 
@@ -98,11 +136,19 @@ by `usr/initramfs_data.S`. Its name does not acquire a compression suffix.
 CI records input paths/sizes/hashes, and preserves the raw FIT and incbin file
 as an explicitly unvalidated artifact if post-build verification fails.
 
-After success, download `ckb01-usb-initramfs-<builder SHA>` from the Actions
-run. It contains both image names, DTB/DTS, `fit-report.json`, the initramfs
-file list, configuration, manifests, feed revisions and checksums. Artifacts
+After success, download `ckb01-usb-image-<builder SHA>` from the Actions
+run. It contains `air5-ckb01-usb.img`, both FIT names, DTB/DTS,
+`fit-report.json`, `usb-image-report.json`, the initramfs file list,
+configuration, manifests, feed revisions and checksums. Artifacts
 and build logs are retained for 30 days. Until hardware testing, the image is
 explicitly **pending hardware validation**.
+
+After FIT validation, CI generates the disk image without root using `sfdisk`,
+`mkfs.fat` and `mcopy`. It verifies the MBR partition number, type, boot flag,
+start/length, FAT16 sector/cluster sizes, FAT hidden-sector count and volume
+length. It checks an extracted partition using `fsck.fat -n` and reads the FIT
+back from the filesystem to require byte-for-byte equality with the validated
+source. Only then is the image published with its SHA256 checksum.
 
 On `ckb01-ath11k-bringup`, CI additionally checks BDF reproducibility, the
 wireless helpers, and the actual initramfs/DTB using `ckb01-fit.py --wireless`.
