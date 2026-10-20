@@ -1,12 +1,12 @@
 #!/bin/sh
 # Read the device's ART by partition label; never write to an MTD device.
-set -eu
+set -e
 . /lib/functions/system.sh
+. /lib/functions/ckb01-wifi.sh
 
 [ "$#" -eq 1 ] || { echo "Usage: ckb01-art-backup OUTPUT_FILE" >&2; exit 1; }
 [ "$(board_name)" = "oppo,ckb01" ] || { echo 'Not an OPPO CKB01' >&2; exit 1; }
-art=$(find_mtd_chardev '0:ART')
-[ -n "$art" ] || art=$(find_mtd_chardev ART)
+art=$(ckb01_find_art_chardev)
 [ -n "$art" ] && [ -r "$art" ] || { echo 'ART partition not found' >&2; exit 1; }
 size=$(cat "/sys/class/mtd/${art##*/}/size")
 [ "$size" -eq 262144 ] || { echo "Unexpected ART size: $size (expected 262144)" >&2; exit 1; }

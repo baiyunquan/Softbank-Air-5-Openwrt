@@ -45,6 +45,37 @@ class WifiHelpers(unittest.TestCase):
         self.assertEqual((self.work / "art").read_bytes(), before)
         self.assertIn(hashlib.sha256(cal).hexdigest(), (self.work / "state").read_text())
 
+    def test_art_lookup_accepts_lowercase_smem_partition_labels(self):
+        result = self.shell('''
+find_mtd_chardev() { [ "$1" = '0:art' ] && printf '/dev/mtd8\\n'; }
+ckb01_find_art_chardev
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "/dev/mtd8")
+
+    def test_art_backup_and_diag_load_the_shared_art_lookup(self):
+        for relative in (
+            "devices/oppo_ckb01/files/usr/sbin/ckb01-art-backup",
+            "devices/oppo_ckb01/files/usr/sbin/ckb01-diag",
+        ):
+            with self.subTest(script=relative):
+                script = (ROOT / relative).read_text()
+                self.assertIn(". /lib/functions/ckb01-wifi.sh", script)
+                self.assertNotRegex(script, r"(?m)^set -[^\n]*u[^\n]*$")
+                if relative.endswith("ckb01-diag"):
+                    self.assertNotIn("Hardware validation pending", script)
+                    self.assertNotIn("LAN1=port2/PHY9/WAN", script)
+
+    def test_phy_band_detection_accepts_decimal_mhz_frequencies(self):
+        (self.work / "info").write_text(" * 2412.0 MHz [1] (20.0 dBm)\n * 5180.0 MHz [36] (20.0 dBm)\n")
+        result = self.shell('ckb01_wifi_has_band 2g info; ckb01_wifi_has_band 5g info')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["yes", "yes"])
+
+    def test_wifi_setup_does_not_enable_nounset_before_openwrt_libraries(self):
+        setup = (ROOT / "devices/oppo_ckb01/files/usr/sbin/ckb01-wifi-setup").read_text()
+        self.assertNotRegex(setup, r"(?m)^set -u\s*$")
+
     def test_missing_art_never_publishes_calibration(self):
         result = self.shell('ckb01_caldata_extract absent 262144 cal.bin state')
         self.assertNotEqual(result.returncode, 0)
@@ -105,10 +136,14 @@ ckb01_wifi_mac 00:03:7f:12:34:56 unit 5g ''
  * 5200 MHz [40] (20.0 dBm)
  * 5220 MHz [44] (20.0 dBm)
  * 5240 MHz [48] (20.0 dBm)
+ * 5745 MHz [149] (21.0 dBm)
+ * 5765 MHz [153] (21.0 dBm)
+ * 5785 MHz [157] (21.0 dBm)
+ * 5805 MHz [161] (21.0 dBm)
 ''')
         result = self.shell('ckb01_wifi_channel 2g info; ckb01_wifi_channel 5g info')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), ["1", "36"])
+        self.assertEqual(result.stdout.splitlines(), ["1", "149"])
         (self.work / "info").write_text(' * 5180 MHz [36] (20.0 dBm)\n * 5200 MHz [40] (disabled)\n')
         result = self.shell('ckb01_wifi_channel 5g info')
         self.assertNotEqual(result.returncode, 0)

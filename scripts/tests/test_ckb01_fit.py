@@ -247,7 +247,7 @@ class Ckb01FitTests(unittest.TestCase):
         for name in ("source-versions.txt", "config.buildinfo"):
             (workspace / "logs" / name).write_text("workflow fixture\n")
         workflow = (repo / ".github/workflows/build-ckb01.yml").read_text()
-        section = workflow.split("      - name: Verify and package USB initramfs\n", 1)[1]
+        section = workflow.split("      - name: Validate and package USB initramfs\n", 1)[1]
         section = section.split("\n      - name:", 1)[0]
         script = section.split("        run: |\n", 1)[1]
         script = "\n".join(line[10:] for line in script.splitlines())
@@ -261,11 +261,15 @@ class Ckb01FitTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((workspace / "artifacts/uimage-initramfs.itb").is_file())
 
-    def test_actual_workflow_rejects_an_archive_not_embedded_in_its_fit(self):
+    def test_actual_workflow_preserves_fit_when_embedded_archive_validation_fails(self):
         result, workspace = self.workflow_package(misplaced=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("not embedded", result.stderr)
-        self.assertFalse((workspace / "artifacts/uimage-initramfs.itb").exists())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            (workspace / "artifacts/uimage-initramfs.itb").read_bytes(),
+            self.source.read_bytes(),
+        )
+        self.assertIn("not embedded", (workspace / "logs/fit-validation.log").read_text())
+        self.assertTrue((workspace / "artifacts/UNVALIDATED-FIT.txt").is_file())
 
 
 if __name__ == "__main__":

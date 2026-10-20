@@ -5,8 +5,7 @@
 [ "$(board_name)" = 'oppo,ckb01' ] || exit 0
 . /lib/functions/ckb01-wifi.sh
 
-art=$(find_mtd_chardev '0:ART')
-[ -n "$art" ] || art=$(find_mtd_chardev ART)
+art=$(ckb01_find_art_chardev)
 size=
 [ -z "$art" ] || size=$(cat "/sys/class/mtd/${art##*/}/size" 2>/dev/null)
 ckb01_caldata_extract "$art" "$size" "/lib/firmware/$FIRMWARE" /tmp/ckb01-caldata.status

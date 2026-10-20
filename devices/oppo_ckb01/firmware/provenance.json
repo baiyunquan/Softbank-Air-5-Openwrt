@@ -16,7 +16,9 @@
     "art_bytes": 262144,
     "offset": 4096,
     "bytes": 131072,
-    "local_unit_dump_available": false
+    "local_unit_dump_available": true,
+    "local_unit_dump_committed": false,
+    "unit_read_and_calibration_verified": "2026-10-20"
   },
-  "hardware_validation": "not performed"
+  "hardware_validation": "One device: ART calibration read, OEM BDF acceptance, dual-band AP, AX211 association, and repeated 30 cm link tests observed from USB initramfs; an additional 30-minute soak was omitted per user request; persistent boot not validated."
 }

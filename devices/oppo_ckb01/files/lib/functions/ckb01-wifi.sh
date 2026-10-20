@@ -2,6 +2,30 @@
 # shellcheck shell=busybox
 # Shared CKB01 calibration/bring-up helpers. Sourcing this file has no side effects.
 
+ckb01_find_art_chardev() {
+	local label art
+	for label in '0:ART' ART '0:art' art; do
+		art=$(find_mtd_chardev "$label")
+		[ -n "$art" ] || continue
+		printf '%s\n' "$art"
+		return 0
+	done
+	return 1
+}
+
+ckb01_wifi_has_band() (
+	band=$1
+	info=$2
+	awk -v band="$band" '
+	$1 == "*" && $3 == "MHz" {
+		frequency = $2 + 0
+		if (band == "2g" && frequency >= 2400 && frequency < 2500) found = 1
+		if (band == "5g" && frequency >= 5000 && frequency < 6000) found = 1
+	}
+	END { if (found) print "yes"; else exit 1 }
+	' "$info"
+)
+
 ckb01_caldata_extract() (
 	art=$1
 	size=$2
@@ -109,8 +133,9 @@ ckb01_wifi_channel() (
 			fi
 		done
 	elif [ "$band" = 5g ]; then
-		# Non-DFS 80 MHz blocks. All four constituent channels must permit AP use.
-		for channel in 36 149; do
+		# Prefer the locally measured low-latency CKB01 block; fall back to 36.
+		# All four non-DFS 80 MHz constituent channels must permit AP use.
+		for channel in 149 36; do
 			available=1
 			for delta in 0 4 8 12; do
 				part=$((channel + delta))
