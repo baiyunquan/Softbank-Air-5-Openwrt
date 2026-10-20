@@ -9,8 +9,8 @@ provides it.
 
 Signed-off-by: Felix Fietkau <nbd@nbd.name>
 ---
- package/libs/libffi/Makefile | 75 ++++++++++++++++++++++++++++++++++++
- 1 file changed, 75 insertions(+)
+ package/libs/libffi/Makefile | 88 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 88 insertions(+)
  create mode 100644 package/libs/libffi/Makefile
 
 diff --git a/package/libs/libffi/Makefile b/package/libs/libffi/Makefile
@@ -18,7 +18,7 @@ new file mode 100644
 index 0000000000..08d2745347
 --- /dev/null
 +++ b/package/libs/libffi/Makefile
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,88 @@
 +#
 +# Copyright (C) 2009-2016 OpenWrt.org
 +#

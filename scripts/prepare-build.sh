@@ -46,18 +46,6 @@ fi
 
 cd "$OPENWRT_DIR"
 
-# 0. Ensure core tree packages exist.
-# Upstream OpenWrt moved libffi from the packages feed to package/libs/libffi
-# in commit 9b835ec626 (2026-10-19), and packages feed removed libs/libffi
-# in commit 70ac3a8440. Pinned trees predating this change lack the package.
-# Ensure package/libs/libffi is populated before feeds update/install so feeds
-# can resolve dependencies against core libffi cleanly.
-if [[ ! -f package/libs/libffi/Makefile ]]; then
-  log::info "Populating missing core package/libs/libffi from builder repository"
-  mkdir -p package/libs/libffi
-  cp "$BUILDER_REPO/packages/libffi/Makefile" package/libs/libffi/Makefile
-fi
-
 # 1. Configure feeds.
 [[ -f feeds.conf ]] || cp feeds.conf.default feeds.conf
 
