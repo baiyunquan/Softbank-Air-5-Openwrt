@@ -19,6 +19,13 @@ capture cmdline cat /proc/cmdline
 capture memory cat /proc/meminfo
 capture partitions cat /proc/mtd
 capture pci lspci -nnk
+capture modem-discovery ckb01-modem discover
+capture modem-probe ckb01-modem probe
+capture cellular ubus call network.interface.cellular status
+capture cellular-counters ip -s -d link
+for evidence in /tmp/ckb01-modem*.json /tmp/ckb01-modem*.jsonl /tmp/ckb01-modem-management.txt; do
+ [ ! -f "$evidence" ] || cp "$evidence" "$work/"
+done
 capture usb lsusb
 capture addresses ip -details address
 capture routes ip route show table all

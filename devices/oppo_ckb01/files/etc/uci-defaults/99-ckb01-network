@@ -53,6 +53,13 @@ set network.lan.ipaddr='192.168.5.1'
 set network.lan.netmask='255.255.255.0'
 set network.lan.macaddr='$lan_mac'
 set network.wan.proto='dhcp'
+set network.wan.metric='20'
+set network.wan6.metric='20'
+set network.cellular=interface
+set network.cellular.proto='ckb01_qmi'
+set network.cellular.apn='3gnet'
+set network.cellular.metric='10'
+set network.cellular.auto='0'
 set network.wan.macaddr='$wan_mac'
 set dhcp.lan.start='100'
 set dhcp.lan.limit='150'
@@ -64,6 +71,13 @@ commit dhcp
 commit firewall
 commit system
 EOF
+# Preserve the existing WAN zone and append cellular only once.
+for zone in $(uci -q show firewall | sed -n 's/^firewall\.\([^=]*\)=zone$/\1/p'); do
+ [ "$(uci -q get "firewall.$zone.name")" = wan ] || continue
+ uci -q del_list "firewall.$zone.network=cellular"
+ uci add_list "firewall.$zone.network=cellular"
+done
+uci commit firewall
 printf 'source=%s\nwan=%s\nlan=%s\n' "$source" "$wan_mac" "$lan_mac" >/tmp/ckb01-mac-source
 logger -t ckb01 "MAC source: $source; physical LAN1=wan, LAN2=lan"
 exit 0

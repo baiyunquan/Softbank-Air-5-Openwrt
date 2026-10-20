@@ -1,0 +1,48 @@
+#!/bin/sh
+. /lib/functions.sh
+. /lib/netifd/netifd-proto.sh
+interface="$1"
+json_load "$2"
+json_get_vars ifname up
+if [ "$up" != 1 ]; then
+ proto_init_update "$ifname" 0
+ proto_send_update "$interface"
+ exit 0
+fi
+# jshn has one active namespace: proto_init_update resets it. Extract all
+# WDS fields before initializing the outgoing netifd notification.
+have4=0; have6=0
+if json_select ipv4; then
+ json_get_vars address gateway netmask dns1 dns2 mtu
+ have4=1
+ json_select ..
+fi
+if json_select ipv6; then
+ json_get_vars address6 gateway6 prefix6 dns6_1 dns6_2
+ have6=1
+ json_select ..
+fi
+proto_init_update "$ifname" 1
+proto_set_keep 1
+metric=$(uci -q get "network.$interface.metric")
+[ -n "$metric" ] || metric=10
+if [ "$have4" -eq 1 ]; then
+ [ -z "$address" ] || proto_add_ipv4_address "$address" "${netmask:-255.255.255.255}"
+ [ -z "$gateway" ] || {
+  proto_add_ipv4_route "$gateway" 32 '' '' "$metric"
+  proto_add_ipv4_route 0.0.0.0 0 "$gateway" '' "$metric"
+ }
+ [ -z "$dns1" ] || proto_add_dns_server "$dns1"
+ [ -z "$dns2" ] || proto_add_dns_server "$dns2"
+ [ -z "$mtu" ] || [ "$mtu" -lt 1280 ] || ip link set dev "$ifname" mtu "$mtu"
+fi
+if [ "$have6" -eq 1 ]; then
+ [ -z "$address6" ] || proto_add_ipv6_address "$address6" "${prefix6:-128}"
+ [ -z "$gateway6" ] || {
+  proto_add_ipv6_route "$gateway6" 128 '' "$metric"
+  proto_add_ipv6_route :: 0 "$gateway6" "$metric"
+ }
+ [ -z "$dns6_1" ] || proto_add_dns_server "$dns6_1"
+ [ -z "$dns6_2" ] || proto_add_dns_server "$dns6_2"
+fi
+proto_send_update "$interface"

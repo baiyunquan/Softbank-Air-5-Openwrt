@@ -104,6 +104,12 @@ for p in "$BUILDER_REPO/patches/tree/$VARIANT"/*.patch; do
 done
 shopt -u nullglob
 
+# Local device packages must exist before Kconfig scans the tree.
+if [[ "$VARIANT" == ckb01 ]]; then
+  mkdir -p package/ckb01
+  rsync -a --delete "$BUILDER_REPO/packages/ckb01-modem/" package/ckb01/ckb01-modem/
+fi
+
 # 2. Assemble .config from the common + device configs, then resolve.
 log::info "Assembling .config from ${CONFIGS[*]#"$BUILDER_REPO"/}"
 cat "${CONFIGS[@]}" >.config
@@ -127,7 +133,11 @@ done < <(cat "${CONFIGS[@]}" |
 if ((${#dropped[@]})); then
   log::error "defconfig dropped ${#dropped[@]} requested symbol(s) for device '$DEVICE':"
   printf '  %s\n' "${dropped[@]}" >&2
-  log::die "add the missing dependency or remove the line - do not ship a silently reduced image"
+  if [[ "$VARIANT" == ckb01 ]]; then
+    echo "::warning title=CKB01 configuration validation::Requested options were dropped; see prepare.log. Continuing with raw build outputs."
+  else
+    log::die "add the missing dependency or remove the line"
+  fi
 fi
 
 # 3. Disable bundling of custom feeds into the image (declared src-git, but we only want

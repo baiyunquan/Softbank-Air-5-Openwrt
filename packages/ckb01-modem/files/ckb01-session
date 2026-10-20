@@ -1,0 +1,16 @@
+#!/bin/sh
+# One netifd-owned supervisor; SIGTERM reaches WDS owner for stop/release.
+interface="$1"; apn="$2"; endpoint="$3"
+child=; stopping=0; delay=5
+trap 'stopping=1; [ -z "$child" ] || kill -TERM "$child" 2>/dev/null; [ -z "$child" ] || wait "$child"; exit 0' TERM INT
+while [ "$stopping" -eq 0 ]; do
+ ckb01-modem connect "$apn" "$interface" "$endpoint" &
+ child=$!
+ wait "$child"
+ child=
+ [ "$stopping" -eq 0 ] || break
+ logger -t ckb01-modem "Data session ended; retry in ${delay}s (no MHI reset)"
+ sleep "$delay" & child=$!; wait "$child"; child=
+ [ "$delay" -ge 300 ] || delay=$((delay * 2))
+ [ "$delay" -le 300 ] || delay=300
+done

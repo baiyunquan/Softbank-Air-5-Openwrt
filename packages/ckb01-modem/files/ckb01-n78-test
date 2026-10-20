@@ -1,0 +1,28 @@
+#!/bin/sh
+# Foreground bounded test. C writer lock waits for asynchronous WDS cleanup.
+duration=${1:-300}
+case "$duration" in ''|*[!0-9]*) exit 2;; esac
+[ "$duration" -ge 30 ] && [ "$duration" -le 1800 ] || exit 2
+ifdown cellular
+ckb01-modem radio n78 || { ifup cellular; exit 1; }
+restore() {
+ rc=$?
+ trap - EXIT INT TERM HUP
+ ifdown cellular
+ if ckb01-modem radio auto; then
+  ifup cellular
+  exit "$rc"
+ fi
+ logger -t ckb01-modem 'ERROR: n78 restore failed; snapshot retained; run radio auto after control recovery'
+ echo 'ERROR: n78 preference restoration failed' >&2
+ exit 1
+}
+trap restore EXIT
+trap 'exit 130' INT TERM HUP
+ifup cellular
+end=$(( $(cut -d. -f1 /proc/uptime) + duration ))
+while [ "$(cut -d. -f1 /proc/uptime)" -lt "$end" ]; do
+ ckb01-modem status
+ ip -s link
+ sleep 15
+done
