@@ -69,7 +69,7 @@ json_object *discover_at(const char *sysfs) {
         continue;
       const char *name = strrchr(g.gl_pathv[i], '/') + 1;
       const char *key = NULL;
-      if (!t && strstr(target, "_QMI/"))
+      if (!t && (strstr(target, "_QMI/") || strstr(name, "qmi0")))
         key = "control";
       if (t && strstr(target, "_IP_SW0/"))
         key = "management";

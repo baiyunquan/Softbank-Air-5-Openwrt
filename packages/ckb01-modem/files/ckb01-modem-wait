@@ -1,12 +1,45 @@
 #!/bin/sh
 # Async procd service; never holds the rest of boot for channel discovery.
+
+start_heartbeat() {
+ ip addr add 169.254.10.1/32 dev lo 2>/dev/null || true
+ if pgrep -f '19888' >/dev/null 2>&1; then
+  return 0
+ fi
+ docroot=/www
+ [ -d "$docroot" ] || docroot=/tmp
+ if command -v uhttpd >/dev/null 2>&1; then
+  uhttpd -p 169.254.10.1:19888 -h "$docroot" 2>/dev/null &
+ fi
+ if ! pgrep -f '19888' >/dev/null 2>&1; then
+  (while :; do nc -l -p 19888 >/dev/null 2>&1 || sleep 1; done) &
+ fi
+}
+
+retrain_pcie() {
+ [ -e /sys/bus/pci/devices/0000:01:00.0 ] && return 0
+ if [ -d /sys/bus/pci/devices/0000:00:00.0 ]; then
+  echo on > /sys/bus/pci/devices/0000:00:00.0/power/control 2>/dev/null
+  if command -v setpci >/dev/null 2>&1; then
+   setpci -s 00:00.0 CAP_EXP+0x10.w=0028 2>/dev/null
+  fi
+  sleep 1
+  echo 1 > /sys/bus/pci/rescan 2>/dev/null
+ else
+  echo 1 > /sys/bus/pci/rescan 2>/dev/null
+ fi
+}
+
+start_heartbeat
 started=$(cut -d. -f1 /proc/uptime)
 while :; do
+ retrain_pcie
  discovery=$(ckb01-modem discover 2>/dev/null)
  management=$(printf '%s' "$discovery" | jsonfilter -e '@.management')
  if [ -n "$management" ]; then
   ip link set dev "$management" up
   ip addr replace 169.254.10.1/24 dev "$management"
+  start_heartbeat
  fi
  ready=$(printf '%s' "$discovery" | jsonfilter -e '@.ok')
  if [ "$ready" = true ]; then

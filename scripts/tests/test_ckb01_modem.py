@@ -121,6 +121,24 @@ class ModemFixtures(unittest.TestCase):
             root=Path(tmp);self.fixture(root,data=False);self.assertFalse(self.discover(root)['ok'])
             p=root/'bus/pci/devices/0000:01:00.0/mhi0_IP_HW0/mhi_hwip8';p.mkdir(parents=True);(root/'class/net/mhi_hwip8').symlink_to(p)
             self.assertTrue(self.discover(root)['ok']);self.assertTrue(self.discover(root)['ok'])
+    def test_wwan_qmi0_without_channel_prefix_matches_control(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            base=root/'firmware/devicetree/base';base.mkdir(parents=True)
+            (base/'compatible').write_bytes(b'oppo,ckb01\0qcom,ipq8074\0')
+            pci=root/'bus/pci/devices/0000:01:00.0';pci.mkdir(parents=True)
+            for name,value in dict(vendor='0x17cb',device='0x0306',subsystem_vendor='0x17cb',subsystem_device='0x010c').items():(pci/name).write_text(value+'\n')
+            wwan_target=pci/'mhi0/wwan/wwan0/wwan0qmi0';wwan_target.mkdir(parents=True)
+            cls_wwan=root/'class/wwan';cls_wwan.mkdir(parents=True,exist_ok=True);(cls_wwan/'wwan0qmi0').symlink_to(wwan_target)
+            for name,ch in [('mhi_swip0','IP_SW0'),('mhi_hwip0','IP_HW0')]:
+                target=pci/('mhi0_'+ch)/name;target.mkdir(parents=True)
+                cls_net=root/'class/net';cls_net.mkdir(parents=True,exist_ok=True);(cls_net/name).symlink_to(target)
+            d=self.discover(root)
+            self.assertTrue(d['ok'])
+            self.assertEqual(d['control'],'/dev/wwan0qmi0')
+            self.assertEqual(d['management'],'mhi_swip0')
+            self.assertEqual(d['data'],'mhi_hwip0')
+
 
 class NetifdRuntime(unittest.TestCase):
     def test_addresses_survive_proto_json_initialization(self):
