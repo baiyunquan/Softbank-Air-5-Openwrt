@@ -9,11 +9,14 @@ on:
       - 'devices/common-bringup/**'
       - 'devices/oppo_ckb01/**'
       - 'patches/tree/ckb01/**'
+      - 'packages/ckb01-modem/**'
+      - 'docs/CKB01_SDX55_PORTING.md'
       - 'scripts/ckb01-fit.py'
       - 'scripts/ckb01-usb-image.py'
       - 'scripts/ckb01-bdf.py'
       - 'scripts/tests/test_ckb01_*.py'
       - 'tools/ath11k-bdencoder'
+      - 'tools/ckb01-oem-recover/**'
       - 'scripts/prepare-build.sh'
       - 'docs/CKB01_USB_BRINGUP.md'
       - 'docs/CKB01_WIFI_PORTING.md'
@@ -53,7 +56,7 @@ jobs:
             build-essential bison flex gawk gettext git glibc-source \
             libncurses-dev libssl-dev python3 rsync swig unzip wget \
             zlib1g-dev zstd u-boot-tools device-tree-compiler cpio file bsdextrautils \
-            dosfstools mtools fdisk
+            dosfstools mtools fdisk clang lld pkg-config libqmi-glib-dev libqrtr-glib-dev libjson-c-dev
           mkdir -p logs artifacts
           df -h .
 
@@ -76,6 +79,13 @@ jobs:
         run: |
           echo '::warning title=CKB01 preflight validation::Preflight checks failed; continuing to compile and upload diagnostic artifacts.'
           echo '- Preflight checks reported errors; compilation continues and logs will be retained.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build standalone OEM PDC recovery tools
+        continue-on-error: true
+        run: |
+          if ! bash builder/tools/ckb01-oem-recover/build.sh artifacts 2>&1 | tee logs/recovery-build.log; then
+            echo '::warning title=CKB01 OEM recovery::Standalone recovery tool build failed; firmware compile and uploads continue.'
+          fi
 
       - name: Checkout pinned OpenWrt source
         uses: actions/checkout@v7
@@ -102,7 +112,7 @@ jobs:
           set -euo pipefail
           test "$(git -C openwrt rev-parse HEAD)" = "$UPSTREAM_SHA"
           bash builder/scripts/prepare-build.sh 2>&1 | tee logs/prepare.log
-          python3 - <<'PY'
+          if ! python3 - <<'PY'
           from pathlib import Path
           lines = set(Path('openwrt/.config').read_text().splitlines())
           selected = sorted(line for line in lines if line.startswith('CONFIG_TARGET_qualcommax_ipq807x_DEVICE_') and line.endswith('=y'))
@@ -116,11 +126,16 @@ jobs:
                          'PACKAGE_kmod-mhi-pci-generic', 'PACKAGE_kmod-mhi-wwan-ctrl',
                          'PACKAGE_kmod-ath11k-ahb', 'PACKAGE_ath11k-firmware-ipq8074',
                          'PACKAGE_wpad-basic-mbedtls', 'PACKAGE_iw', 'PACKAGE_iwinfo',
-                         'PACKAGE_wireless-regdb'):
+                         'PACKAGE_wireless-regdb', 'PACKAGE_ckb01-modem', 'PACKAGE_qmi-utils',
+                         'PACKAGE_kmod-rmnet', 'PACKAGE_kmod-qrtr-mhi', 'PACKAGE_kmod-mhi-net',
+                         'LIBQMI_WITH_QRTR_GLIB', 'LIBQMI_COLLECTION_FULL'):
               assert f'CONFIG_{symbol}=y' in lines, f'Missing {symbol}'
           for symbol in ('PACKAGE_kmod-nss-wifi-drv', 'ATH11K_NSS_WIFI'):
               assert f'CONFIG_{symbol}=y' not in lines, f'Unexpected {symbol}'
           PY
+          then
+            echo '::warning title=CKB01 configuration validation::Configuration checks failed; compilation and uploads continue.'
+          fi
           {
             echo "Builder: $GITHUB_SHA"
             echo "Source: $UPSTREAM_REPO@$UPSTREAM_SHA"
@@ -211,6 +226,7 @@ jobs:
           cp logs/source-versions.txt logs/config.buildinfo artifacts/
           cp builder/docs/CKB01_USB_BRINGUP.md artifacts/README.md
           cp builder/docs/CKB01_WIFI_PORTING.md artifacts/
+          cp builder/docs/CKB01_SDX55_PORTING.md artifacts/
           cp builder/devices/oppo_ckb01/firmware/provenance.json artifacts/bdf-provenance.json
           find openwrt/bin/targets/qualcommax/ipq807x -maxdepth 1 -type f \
             \( -name '*.manifest' -o -name '*.buildinfo' -o -name 'profiles.json' \) \
@@ -234,7 +250,7 @@ jobs:
           else
             sha256sum "${fits[0]}" "${ramdisks[0]}" | tee logs/verification-inputs.sha256
             if python3 builder/scripts/ckb01-fit.py "${fits[0]}" \
-              --initramfs "${ramdisks[0]}" --wireless --output artifacts 2>&1 | tee logs/fit-validation.log; then
+              --initramfs "${ramdisks[0]}" --wireless --modem --output artifacts 2>&1 | tee logs/fit-validation.log; then
               echo 'FIT validation passed.'
             else
               validation_status=${PIPESTATUS[0]}

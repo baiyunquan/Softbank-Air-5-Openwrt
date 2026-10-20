@@ -78,7 +78,7 @@ def archive_entries(data):
     raise ValueError("initramfs archive has no TRAILER!!!")
 
 
-def verify_initramfs(path, kernel, wireless=False):
+def verify_initramfs(path, kernel, wireless=False, modem=False):
     compressed = path.read_bytes()
     require(bool(compressed) and compressed in kernel,
             "the supplied initramfs bytes are not embedded in the FIT kernel")
@@ -101,6 +101,17 @@ def verify_initramfs(path, kernel, wireless=False):
         require(not any("/cal-ahb-" in name or name.endswith("/caldata.bin") for name in paths),
                 "wireless initramfs must obtain unit calibration from ART at runtime")
         modules += ("ath11k", "ath11k_ahb", "mac80211", "cfg80211")
+    if modem:
+        for name in ("usr/sbin/ckb01-modem", "usr/bin/qmicli", "usr/libexec/qmi-proxy",
+                     "lib/netifd/proto/ckb01_qmi.sh", "lib/netifd/ckb01-update",
+                     "usr/sbin/ckb01-session", "usr/sbin/ckb01-modem-wait",
+                     "etc/init.d/ckb01-modem", "etc/rc.d/S96ckb01-modem",
+                     "usr/share/ckb01-modem/mbn-sha256.json"):
+            require(bool(entries.get(name)), f"modem initramfs is missing {name}")
+        for lib in ("libqmi-glib.so", "libqrtr-glib.so", "libjson-c.so", "libglib-2.0.so", "libgio-2.0.so", "libgobject-2.0.so"):
+            require(any(Path(name).name.startswith(lib) for name in paths),
+                    f"modem initramfs is missing {lib}")
+        modules += ("mhi_net", "qrtr_mhi", "qrtr", "rmnet")
     for module in modules:
         require(any(Path(name).name in (f"{module}.ko", f"{module}.ko.zst", f"{module}.ko.gz")
                     for name in paths), f"initramfs is missing {module}")
@@ -139,7 +150,7 @@ def verify_board(dtb, wireless=False):
                     f"wireless DT has the wrong 512MB reserved-memory region at {address:#x}")
 
 
-def verify_fit(fit, initramfs, work, wireless=False):
+def verify_fit(fit, initramfs, work, wireless=False, modem=False):
     require(prop(fit, "/configurations", "default") == "config@1", "FIT default must be config@1")
     config = "/configurations/config@1"
     kernel_node = prop(fit, config, "kernel")
@@ -185,7 +196,7 @@ def verify_fit(fit, initramfs, work, wireless=False):
     dtb = work / "ckb01.dtb"
     dtb.write_bytes(payloads[fdt_node])
     verify_board(dtb, wireless)
-    paths = verify_initramfs(initramfs, kernel, wireless)
+    paths = verify_initramfs(initramfs, kernel, wireless, modem)
     return dtb, paths, {
         "board": "oppo,ckb01", "hardware_validation": "not performed",
         "kernel_load": "0x41000000", "kernel_entry": "0x41000000",
@@ -195,24 +206,25 @@ def verify_fit(fit, initramfs, work, wireless=False):
         "wireless": {"enabled": wireless, "bdf_sha256": BDF_SHA256 if wireless else None,
                      "calibration_source": "unit ART at boot" if wireless else None,
                      "hardware_validation": "not performed"},
-        "port_mapping": {"LAN1": "wan / switch port2 / PHY9 (pending hardware check)",
-                         "LAN2": "lan / switch port1 / PHY8 (pending hardware check)"},
+        "modem": {"enabled": modem, "control_validation": "pending", "data_validation": "pending", "n78_validation": "pending"},
+        "port_mapping": {"LAN1": "wan / switch port1 / PHY8 (hardware verified)",
+                         "LAN2": "lan / switch port2 / PHY9 (hardware verified)"},
     }
 
 
-def package(source, initramfs, output, wireless=False):
+def package(source, initramfs, output, wireless=False, modem=False):
     with tempfile.TemporaryDirectory(prefix="ckb01-package-") as temporary:
         work = Path(temporary)
         fit = work / IMAGE_NAME
         shutil.copyfile(source, fit)
-        dtb, paths, report = verify_fit(fit, initramfs, work, wireless)
+        dtb, paths, report = verify_fit(fit, initramfs, work, wireless, modem)
         alias = "/configurations/config@hk09"
         command("fdtput", "-c", fit, alias)
         for name, value in (("description", "OpenWrt OPPO CKB01 HK09"),
                             ("kernel", "kernel@1"), ("fdt", "fdt@1")):
             command("fdtput", "-t", "s", fit, alias, name, value)
         # Tree growth must preserve payload bytes and their hashes.
-        dtb, paths, report = verify_fit(fit, initramfs, work, wireless)
+        dtb, paths, report = verify_fit(fit, initramfs, work, wireless, modem)
         command("dumpimage", "-l", fit)
         (work / "fit-report.json").write_text(json.dumps(report, indent=2) + "\n")
         (work / "initramfs-files.txt").write_text("\n".join(sorted(paths)) + "\n")
@@ -235,9 +247,10 @@ def main():
                         help="kernel usr/initramfs_inc_data (must be embedded in the Image)")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--wireless", action="store_true", help="require CKB01 ath11k DT, BDF and runtime contents")
+    parser.add_argument("--modem", action="store_true", help="require native MHI QMI/QRTR tools and dependencies")
     args = parser.parse_args()
     try:
-        package(args.fit, args.initramfs, args.output, args.wireless)
+        package(args.fit, args.initramfs, args.output, args.wireless, args.modem)
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         parser.exit(1, f"CKB01 FIT validation failed: {error}\n")
 

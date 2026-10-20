@@ -58,7 +58,7 @@ class Ckb01FitTests(unittest.TestCase):
 
     def make_fit(self, *, board="oppo,ckb01", missing_module=False,
                  oversized=False, swapped_phy=False, wireless=False, bad_bdf=False, missing_segment=False,
-                 compressed_initramfs=False):
+                 compressed_initramfs=False, modem=False):
         paths = [name for name in REQUIRED if not (missing_module and name.endswith("mhi_wwan_ctrl.ko"))]
         contents = {}
         if wireless:
@@ -67,6 +67,16 @@ class Ckb01FitTests(unittest.TestCase):
             contents[BDF_PATH] = b"wrong BDF" if bad_bdf else BDF.read_bytes()
             if missing_segment:
                 paths.remove("lib/firmware/IPQ8074/q6_fw.b08")
+        if modem:
+            modem_paths = ["usr/sbin/ckb01-modem", "usr/bin/qmicli", "usr/libexec/qmi-proxy",
+                           "lib/netifd/proto/ckb01_qmi.sh", "lib/netifd/ckb01-update",
+                           "usr/sbin/ckb01-session", "usr/sbin/ckb01-modem-wait",
+                           "etc/init.d/ckb01-modem", "etc/rc.d/S96ckb01-modem",
+                           "usr/share/ckb01-modem/mbn-sha256.json"]
+            modem_paths += [f"usr/lib/{lib}.so.1" for lib in ("libqmi-glib", "libqrtr-glib", "libjson-c", "libglib-2.0", "libgio-2.0", "libgobject-2.0")]
+            modem_paths += [f"lib/modules/6.18/{module}.ko" for module in ("mhi_net", "qrtr_mhi", "qrtr", "rmnet")]
+            paths += modem_paths
+            contents.update({name: b"test modem payload" for name in modem_paths})
         archive = cpio(paths, contents)
         if compressed_initramfs:
             archive = subprocess.run(["zstd", "-q", "-c"], input=archive, capture_output=True,
@@ -229,7 +239,7 @@ class Ckb01FitTests(unittest.TestCase):
 
     def workflow_package(self, *, misplaced=False):
         """Execute the actual CI step with the Linux 6.18 Kbuild output name."""
-        self.make_fit(wireless=True, compressed_initramfs=True)
+        self.make_fit(wireless=True, compressed_initramfs=True, modem=True)
         workspace = self.work / "workspace"
         workspace.mkdir()
         repo = PACKAGER.parents[1]
@@ -260,6 +270,12 @@ class Ckb01FitTests(unittest.TestCase):
         result, workspace = self.workflow_package()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((workspace / "artifacts/uimage-initramfs.itb").is_file())
+
+    def test_actual_modem_workflow_validates_libexec_proxy_location(self):
+        result, workspace = self.workflow_package()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((workspace / "artifacts/fit-report.json").exists(), result.stdout)
+        self.assertFalse((workspace / "artifacts/UNVALIDATED-FIT.txt").exists())
 
     def test_actual_workflow_preserves_fit_when_embedded_archive_validation_fails(self):
         result, workspace = self.workflow_package(misplaced=True)
