@@ -74,7 +74,7 @@ class Ckb01FitTests(unittest.TestCase):
                            "etc/init.d/ckb01-modem", "etc/rc.d/S96ckb01-modem",
                            "usr/share/ckb01-modem/mbn-sha256.json"]
             modem_paths += [f"usr/lib/{lib}.so.1" for lib in ("libqmi-glib", "libqrtr-glib", "libjson-c", "libglib-2.0", "libgio-2.0", "libgobject-2.0")]
-            modem_paths += [f"lib/modules/6.18/{module}.ko" for module in ("mhi_net", "qrtr_mhi", "qrtr", "rmnet")]
+            modem_paths += [f"lib/modules/6.18/{module}.ko" for module in ("mhi_net", "qrtr-mhi", "qrtr", "rmnet")]
             paths += modem_paths
             contents.update({name: b"test modem payload" for name in modem_paths})
         archive = cpio(paths, contents)

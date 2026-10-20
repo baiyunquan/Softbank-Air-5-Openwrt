@@ -113,7 +113,7 @@ def verify_initramfs(path, kernel, wireless=False, modem=False):
                     f"modem initramfs is missing {lib}")
         modules += ("mhi_net", "qrtr_mhi", "qrtr", "rmnet")
     for module in modules:
-        require(any(Path(name).name in (f"{module}.ko", f"{module}.ko.zst", f"{module}.ko.gz")
+        require(any(Path(name).name.replace("-", "_") in (f"{module}.ko", f"{module}.ko.zst", f"{module}.ko.gz")
                     for name in paths), f"initramfs is missing {module}")
     return paths
 
