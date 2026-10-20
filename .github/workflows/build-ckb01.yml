@@ -89,9 +89,7 @@ jobs:
       - name: Restore source downloads and compiler cache
         uses: actions/cache@v6
         with:
-          path: |
-            openwrt/dl
-            openwrt/.ccache
+          path: openwrt/dl
           key: ckb01-${{ runner.os }}-${{ env.UPSTREAM_SHA }}-${{ github.run_id }}
           restore-keys: |
             ckb01-${{ runner.os }}-${{ env.UPSTREAM_SHA }}-
@@ -111,6 +109,9 @@ jobs:
           assert selected == ['CONFIG_TARGET_qualcommax_ipq807x_DEVICE_oppo_ckb01=y'], selected
           assert 'CONFIG_TARGET_MULTI_PROFILE=y' not in lines
           assert 'CONFIG_TARGET_PER_DEVICE_ROOTFS=y' not in lines
+          assert 'CONFIG_CCACHE=y' in lines, 'OpenWrt compiler cache is not enabled'
+          ccache_dir = next((line for line in lines if line.startswith('CONFIG_CCACHE_DIR=')), None)
+          assert ccache_dir in (None, 'CONFIG_CCACHE_DIR=""'), ccache_dir
           for symbol in ('TARGET_ROOTFS_INITRAMFS', 'TARGET_INITRAMFS_COMPRESSION_ZSTD',
                          'PACKAGE_kmod-mhi-pci-generic', 'PACKAGE_kmod-mhi-wwan-ctrl',
                          'PACKAGE_kmod-ath11k-ahb', 'PACKAGE_ath11k-firmware-ipq8074',
@@ -137,6 +138,36 @@ jobs:
             echo 'KBUILD_BUILD_USER=builder'
             echo 'KBUILD_BUILD_HOST=github'
           } >> "$GITHUB_ENV"
+
+      # Keep the compiler cache isolated to compatible CKB01 toolchains. The
+      # source tree and .config identify OpenWrt's cross toolchain; runner GCC
+      # and binutils versions cover the host compiler checks.
+      - name: Compute CKB01 ccache key
+        id: ccache_key
+        run: |
+          set -euo pipefail
+          toolchain_tree="$(git -C openwrt rev-parse HEAD:toolchain)"
+          fingerprint="$({
+            printf '%s\n' "$toolchain_tree"
+            grep -E '^CONFIG_(BINUTILS|GCC|LIBC|MUSL|GLIBC)_' openwrt/.config || true
+            gcc --version
+            as --version
+          } | sha256sum | cut -c1-16)"
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+
+      - name: Restore and configure CKB01 compiler cache
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        env:
+          # Match OpenWrt's default CONFIG_CCACHE_DIR ($TOPDIR/.ccache).
+          CCACHE_DIR: ${{ github.workspace }}/openwrt/.ccache
+        with:
+          key: ckb01-${{ runner.os }}-${{ steps.ccache_key.outputs.fingerprint }}
+          restore-keys: |
+            ckb01-${{ runner.os }}-${{ steps.ccache_key.outputs.fingerprint }}
+          max-size: 4G
+          install: binary
+          append-timestamp: true
+          job-summary: CKB01 CCache Statistics
 
       - name: Download build sources
         working-directory: openwrt
