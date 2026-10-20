@@ -9,7 +9,7 @@ on:
       - 'devices/common-bringup/**'
       - 'devices/oppo_ckb01/**'
       - 'patches/tree/ckb01/**'
-      - 'packages/ckb01-modem/**'
+      - 'packages/**'
       - 'docs/CKB01_SDX55_PORTING.md'
       - 'scripts/ckb01-fit.py'
       - 'scripts/ckb01-usb-image.py'
@@ -128,7 +128,8 @@ jobs:
                          'PACKAGE_wpad-basic-mbedtls', 'PACKAGE_iw', 'PACKAGE_iwinfo',
                          'PACKAGE_wireless-regdb', 'PACKAGE_ckb01-modem', 'PACKAGE_qmi-utils',
                          'PACKAGE_kmod-rmnet', 'PACKAGE_kmod-qrtr-mhi', 'PACKAGE_kmod-mhi-net',
-                         'LIBQMI_WITH_QRTR_GLIB', 'LIBQMI_COLLECTION_FULL'):
+                         'LIBQMI_WITH_QRTR_GLIB', 'LIBQMI_COLLECTION_FULL',
+                         'PACKAGE_libffi'):
               assert f'CONFIG_{symbol}=y' in lines, f'Missing {symbol}'
           for symbol in ('PACKAGE_kmod-nss-wifi-drv', 'ATH11K_NSS_WIFI'):
               assert f'CONFIG_{symbol}=y' not in lines, f'Unexpected {symbol}'
