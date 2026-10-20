@@ -1,0 +1,77 @@
+--- /dev/null
++++ b/target/linux/qualcommax/patches-6.18/950-ckb01-sdx55-mhi.patch
+@@ -0,0 +1,74 @@
++--- a/drivers/bus/mhi/host/pci_generic.c
+++++ b/drivers/bus/mhi/host/pci_generic.c
++@@ -12,6 +12,7 @@
++ #include <linux/device.h>
++ #include <linux/mhi.h>
++ #include <linux/module.h>
+++#include <linux/of.h>
++ #include <linux/pci.h>
++ #include <linux/pm_runtime.h>
++ #include <linux/timer.h>
++@@ -393,6 +394,40 @@
++ 	.bar_num = MHI_PCI_DEFAULT_BAR_NUM,
++ 	.dma_data_width = 32,
++ 	.sideband_wake = false,
+++};
+++
+++/* OPPO CKB01's SDX55 boots from its own NAND, never host-download SBL. */
+++static const struct mhi_channel_config ckb01_sdx55_channels[] = {
+++	MHI_CHANNEL_CONFIG_UL(4, "DIAG", 64, 1),
+++	MHI_CHANNEL_CONFIG_DL(5, "DIAG", 64, 1),
+++	MHI_CHANNEL_CONFIG_UL(14, "QMI", 64, 0),
+++	MHI_CHANNEL_CONFIG_DL(15, "QMI", 64, 0),
+++	MHI_CHANNEL_CONFIG_UL(16, "QMI1", 64, 0),
+++	MHI_CHANNEL_CONFIG_DL(17, "QMI1", 64, 0),
+++	MHI_CHANNEL_CONFIG_UL(20, "IPCR", 64, 0),
+++	MHI_CHANNEL_CONFIG_DL(21, "IPCR", 64, 0),
+++	MHI_CHANNEL_CONFIG_UL(46, "IP_SW0", 64, 2),
+++	MHI_CHANNEL_CONFIG_DL(47, "IP_SW0", 64, 3),
+++	MHI_CHANNEL_CONFIG_HW_UL(100, "IP_HW0", 512, 4),
+++	MHI_CHANNEL_CONFIG_HW_DL(101, "IP_HW0", 1024, 5),
+++};
+++
+++/* Use mainline's six rings and IRQ ownership, not QSDK's client-managed ABI. */
+++static const struct mhi_controller_config ckb01_sdx55_config = {
+++	.max_channels = 128,
+++	.timeout_ms = 60000,
+++	.num_channels = ARRAY_SIZE(ckb01_sdx55_channels),
+++	.ch_cfg = ckb01_sdx55_channels,
+++	.num_events = ARRAY_SIZE(modem_qcom_v1_mhi_events),
+++	.event_cfg = modem_qcom_v1_mhi_events,
+++};
+++
+++static const struct mhi_pci_dev_info ckb01_sdx55_info = {
+++	.name = "ckb01-sdx55",
+++	.config = &ckb01_sdx55_config,
+++	.bar_num = MHI_PCI_DEFAULT_BAR_NUM,
+++	.dma_data_width = 32,
+++	.mru_default = 32768,
++ };
++ 
++ static const struct mhi_pci_dev_info mhi_qcom_sdx55_info = {
++@@ -1304,6 +1339,12 @@
++ 	unsigned int dma_data_width;
++ 	int err;
++ 
+++	/* Preserve Foxconn matching on every other board/subsystem. */
+++	if (of_machine_is_compatible("oppo,ckb01") &&
+++	    pdev->vendor == 0x17cb && pdev->device == 0x0306 &&
+++	    pdev->subsystem_vendor == 0x17cb && pdev->subsystem_device == 0x010c)
+++		info = &ckb01_sdx55_info;
+++
++ 	dev_info(&pdev->dev, "MHI PCI device found: %s\n", info->name);
++ 
++ 	/* mhi_pdev.mhi_cntrl must be zero-initialized */
++--- a/drivers/net/wwan/mhi_wwan_ctrl.c
+++++ b/drivers/net/wwan/mhi_wwan_ctrl.c
++@@ -261,6 +261,7 @@
++ 	{ .chan = "DUN2", .driver_data = WWAN_PORT_AT },
++ 	{ .chan = "MBIM", .driver_data = WWAN_PORT_MBIM },
++ 	{ .chan = "QMI", .driver_data = WWAN_PORT_QMI },
+++	{ .chan = "QMI1", .driver_data = WWAN_PORT_QMI },
++ 	{ .chan = "DIAG", .driver_data = WWAN_PORT_QCDM },
++ 	{ .chan = "FIREHOSE", .driver_data = WWAN_PORT_FIREHOSE },
++ 	{},
