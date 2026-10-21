@@ -39,7 +39,7 @@ index 0000000..4930994
 +	chosen {
 +		stdout-path = "serial0:115200n8";
 +		/* Override the OEM environment's loglevel=0 during bring-up. */
-+		bootargs-append = " console=ttyMSM0,115200n8 loglevel=7";
++		bootargs-append = " console=ttyMSM0,115200n8 loglevel=7 root=/dev/sda2 rootfstype=ext4 rootwait rw";
 +	};
 +
 +	memory@40000000 {
@@ -263,3 +263,17 @@ index de07242..5a7fb2b 100644
  	tcl,linkhub-hh500v|\
  	tplink,deco-x80-5g|\
  	yuncore,ax880|\
+diff --git a/target/linux/qualcommax/ipq807x/config-default b/target/linux/qualcommax/ipq807x/config-default
+index 66d44a56b1..397dd1ddbf 100644
+--- a/target/linux/qualcommax/ipq807x/config-default
++++ b/target/linux/qualcommax/ipq807x/config-default
+@@ -37,3 +37,8 @@ CONFIG_SPMI=y
+ # CONFIG_SPMI_HISI3670 is not set
+ CONFIG_SPMI_MSM_PMIC_ARB=y
+ # CONFIG_SPMI_PMIC_CLKDIV is not set
++CONFIG_EXT4_FS=y
++CONFIG_EXT4_FS_POSIX_ACL=y
++CONFIG_EXT4_FS_SECURITY=y
++CONFIG_FS_MBCACHE=y
++CONFIG_JBD2=y
+
