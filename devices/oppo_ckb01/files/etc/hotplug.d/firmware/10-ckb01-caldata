@@ -1,6 +1,9 @@
 #!/bin/sh
 
-[ "$FIRMWARE" = 'ath11k/IPQ8074/hw2.0/cal-ahb-c000000.wifi.bin' ] || exit 0
+case "$FIRMWARE" in
+	*cal-ahb-c000000.wifi.bin*) ;;
+	*) exit 0 ;;
+esac
 . /lib/functions/system.sh
 [ "$(board_name)" = 'oppo,ckb01' ] || exit 0
 . /lib/functions/ckb01-wifi.sh

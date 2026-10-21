@@ -18,14 +18,11 @@ start_heartbeat() {
 
 retrain_pcie() {
  [ -e /sys/bus/pci/devices/0000:01:00.0 ] && return 0
+ [ -n "$_retrain_attempted" ] && return 0
+ _retrain_attempted=1
  if [ -d /sys/bus/pci/devices/0000:00:00.0 ]; then
   echo on > /sys/bus/pci/devices/0000:00:00.0/power/control 2>/dev/null
-  if command -v setpci >/dev/null 2>&1; then
-   setpci -s 00:00.0 CAP_EXP+0x10.w=0028 2>/dev/null
-  fi
   sleep 1
-  echo 1 > /sys/bus/pci/rescan 2>/dev/null
- else
   echo 1 > /sys/bus/pci/rescan 2>/dev/null
  fi
 }
