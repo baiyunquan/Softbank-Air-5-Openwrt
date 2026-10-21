@@ -58,7 +58,9 @@ has a 20-second timeout. It then waits up to 30 seconds using integer `sleep 1`
 for a unique partition 2 labeled `AIR5ROOT`; it does not assume the disk is
 always `sda`. It creates block nodes from sysfs without depending on hotplug.
 The explicit `blkid` package and USB boot modules are included in the firmware;
-UAS storage is also loaded early for USB drives using that transport.
+UAS storage is also loaded early for USB drives using that transport. Repairs
+of an existing build without blkid can use its existing `/sbin/block info`
+through the shared label helper; no replacement system libraries are required.
 
 If the partition mounts as ext4 and contains OpenWrt init plus modules for the
 running kernel, `/init` unmounts proc/sysfs and switches to that writable root.

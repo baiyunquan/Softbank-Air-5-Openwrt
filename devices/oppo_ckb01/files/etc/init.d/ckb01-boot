@@ -5,12 +5,13 @@ STOP=90
 
 start() {
 	local root_dev root_name boot_dev
+	. /lib/functions/ckb01-block.sh
 	root_dev=$(awk '$2 == "/" && $3 == "ext4" { print $1; exit }' /proc/mounts)
 	case "$root_dev" in /dev/sd*2) ;; *) return 0;; esac
 	root_name=${root_dev##*/}
 	[ "$(cat "/sys/class/block/$root_name/partition" 2>/dev/null)" = 2 ] || return 1
 	boot_dev="${root_dev%2}1"
-	[ "$(blkid -p -s LABEL -o value "$boot_dev" 2>/dev/null)" = AIR5BOOT ] || {
+	[ "$(ckb01_block_label "$boot_dev")" = AIR5BOOT ] || {
 		logger -t ckb01-boot "Boot partition $boot_dev missing AIR5BOOT label; not mounted"
 		return 1
 	}

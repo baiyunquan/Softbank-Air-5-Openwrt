@@ -1,7 +1,7 @@
 diff --git a/target/linux/generic/other-files/init b/target/linux/generic/other-files/init
 --- a/target/linux/generic/other-files/init
 +++ b/target/linux/generic/other-files/init
-@@ -1,14 +1,111 @@
+@@ -1,14 +1,112 @@
 -#!/bin/sh
 -# Copyright (C) 2006 OpenWrt.org
 -export INITRAMFS=1
@@ -20,6 +20,7 @@ diff --git a/target/linux/generic/other-files/init b/target/linux/generic/other-
 +# Copyright (C) 2006 OpenWrt.org
 +export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 +cd /
++. /lib/functions/ckb01-block.sh
 +NEW_ROOT=/new_root
 +
 +boot_log() {
@@ -42,7 +43,7 @@ diff --git a/target/linux/generic/other-files/init b/target/linux/generic/other-
 +		[ "$(cat "$partition/partition")" = 2 ] || continue
 +		name=${partition##*/}
 +		make_block_node "$name" || continue
-+		label=$(blkid -p -s LABEL -o value "/dev/$name" 2>/dev/null)
++		label=$(ckb01_block_label "/dev/$name")
 +		[ "$label" = AIR5ROOT ] || continue
 +		if [ -n "$ROOT_DEV" ]; then
 +			boot_log "multiple AIR5ROOT partitions; using RAM recovery"
@@ -71,7 +72,7 @@ diff --git a/target/linux/generic/other-files/init b/target/linux/generic/other-
 +	if ! /bin/busybox timeout 20 /sbin/kmodloader /etc/modules-boot.d/; then
 +		boot_log "early module load reported an error/timeout; continuing discovery"
 +	fi
-+	if command -v blkid >/dev/null 2>&1; then
++	if command -v blkid >/dev/null 2>&1 || [ -x /sbin/block ]; then
 +		boot_log "waiting up to 30 seconds for ext4 AIR5ROOT (partition 2)"
 +		elapsed=0
 +		while :; do
@@ -103,7 +104,7 @@ diff --git a/target/linux/generic/other-files/init b/target/linux/generic/other-
 +			boot_log "no unique AIR5ROOT found"
 +		fi
 +	else
-+		boot_log "blkid missing from initramfs"
++		boot_log "neither blkid nor block is available in initramfs"
 +	fi
 +fi
 +
