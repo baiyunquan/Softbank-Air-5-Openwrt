@@ -1,0 +1,31 @@
+#!/bin/sh /etc/rc.common
+# Mount only the boot partition belonging to the active persistent USB root.
+START=19
+STOP=90
+
+start() {
+	local root_dev root_name boot_dev
+	root_dev=$(awk '$2 == "/" && $3 == "ext4" { print $1; exit }' /proc/mounts)
+	case "$root_dev" in /dev/sd*2) ;; *) return 0;; esac
+	root_name=${root_dev##*/}
+	[ "$(cat "/sys/class/block/$root_name/partition" 2>/dev/null)" = 2 ] || return 1
+	boot_dev="${root_dev%2}1"
+	[ "$(blkid -p -s LABEL -o value "$boot_dev" 2>/dev/null)" = AIR5BOOT ] || {
+		logger -t ckb01-boot "Boot partition $boot_dev missing AIR5BOOT label; not mounted"
+		return 1
+	}
+	mkdir -p /boot
+	awk '$2 == "/boot" { found=1 } END { exit !found }' /proc/mounts && return 0
+	if mount -t vfat -o ro,noatime "$boot_dev" /boot; then
+		printf 'root=%s\nboot=%s\nboot_mode=read-only\n' "$root_dev" "$boot_dev" >/tmp/ckb01-usb-root
+		logger -t ckb01-boot "Persistent root=$root_dev; read-only boot=$boot_dev at /boot"
+	else
+		logger -t ckb01-boot "Failed to mount $boot_dev at /boot; persistent root remains available"
+		return 1
+	fi
+}
+
+stop() {
+	awk '$2 == "/boot" { found=1 } END { exit !found }' /proc/mounts || return 0
+	umount /boot
+}

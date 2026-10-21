@@ -293,7 +293,7 @@ jobs:
             echo '- LAN1: DHCP WAN; LAN2: management at 192.168.5.1'
             echo '- APs: Air5-2G / Air5-5G; key Air5-OpenWrt; calibration read from unit ART'
             echo '- SDX55 management: ckb01-oem exec/pull/push; ckb01-adb enable/shell/disable (on demand, no automatic EDL/reboot)'
-            echo '- RAM root; hardware validation pending.'
+            echo '- FIT includes RAM recovery; complete dual-partition IMG uses persistent AIR5ROOT when available. Hardware validation pending.'
             if [[ -f artifacts/fit-report.json ]]; then
               cat artifacts/fit-report.json
             else
@@ -317,11 +317,19 @@ jobs:
             exit 0
           fi
           rootfs_tar=$(find openwrt/bin/targets/qualcommax/ipq807x -name '*oppo_ckb01*-rootfs.tar.gz' -type f 2>/dev/null | head -n 1 || true)
+          if [[ -z "$rootfs_tar" ]]; then
+            # With PER_DEVICE_ROOTFS=n OpenWrt names this by target, not board.
+            rootfs_tar=$(find openwrt/bin/targets/qualcommax/ipq807x -maxdepth 1 \
+              -name 'openwrt-qualcommax-ipq807x-rootfs.tar.gz' -type f | head -n 1 || true)
+          fi
           rootfs_opts=()
           if [[ -n "$rootfs_tar" && -s "$rootfs_tar" ]]; then
             echo "Found OpenWrt rootfs tarball: $rootfs_tar"
             cp "$rootfs_tar" artifacts/
             rootfs_opts=(--rootfs "$rootfs_tar")
+          else
+            echo '::warning title=CKB01 persistent root missing::No compiled rootfs tarball found; only RAM recovery IMG can be packaged. Raw FIT and logs remain uploadable.'
+            echo '- Rootfs tarball missing: IMG has RAM recovery only, without persistent partition 2.' >> "$GITHUB_STEP_SUMMARY"
           fi
           if python3 builder/scripts/ckb01-usb-image.py artifacts/uimage-initramfs.itb \
             "${rootfs_opts[@]}" --output artifacts 2>&1 | tee logs/usb-image-validation.log; then
@@ -339,7 +347,11 @@ jobs:
             # shellcheck disable=SC2016
             echo '- Write `air5-ckb01-usb.img` (or decompressed `air5-ckb01-usb.img.gz`) to the whole USB drive, not a partition.'
             echo '- MBR partition table; bootable partition 1: 256 MiB FAT16 (`AIR5BOOT`) at LBA 2048.'
-            echo '- Partition 2: 1024 MiB ext4 (`AIR5ROOT`) persistent rootfs; auto-expands on first boot.'
+            if [[ ${#rootfs_opts[@]} -gt 0 ]]; then
+              echo '- Partition 2: 1024 MiB ext4 (`AIR5ROOT`) persistent rootfs; auto-expands on first boot. Same-disk AIR5BOOT mounts read-only at /boot.'
+            else
+              echo '- No rootfs tarball available: single-partition RAM recovery image only.'
+            fi
             echo '- Intended to boot through OEM USB autoboot; no interactive U-Boot command needed.'
             if [[ -f artifacts/usb-image-report.json ]]; then
               cat artifacts/usb-image-report.json

@@ -39,7 +39,7 @@ index 0000000..4930994
 +	chosen {
 +		stdout-path = "serial0:115200n8";
 +		/* Override the OEM environment's loglevel=0 during bring-up. */
-+		bootargs-append = " console=ttyMSM0,115200n8 loglevel=7 root=/dev/sda2 rootfstype=ext4 rootwait rw";
++		bootargs-append = " console=ttyMSM0,115200n8 loglevel=7";
 +	};
 +
 +	memory@40000000 {

@@ -43,6 +43,15 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def copy_extent(source, destination, length):
+    """Copy exactly one partition, without reading the following partition."""
+    while length:
+        data = source.read(min(length, 1024 * 1024))
+        require(bool(data), "USB image ended before the partition boundary")
+        destination.write(data)
+        length -= len(data)
+
+
 def sha256(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -89,7 +98,7 @@ def verify(image, fit, work, has_rootfs=False):
         stream.seek(start * SECTOR_SIZE)
         partition1 = work / "partition-1.fat"
         with partition1.open("wb") as destination:
-            shutil.copyfileobj(stream, destination, PARTITION_1_BYTES)
+            copy_extent(stream, destination, PARTITION_1_BYTES)
 
     command("sfdisk", "--verify", image)
     filesystem_check = command("fsck.fat", "-n", partition1)
@@ -105,7 +114,7 @@ def verify(image, fit, work, has_rootfs=False):
         if not part2_file.exists():
             with image.open("rb") as stream, part2_file.open("wb") as destination:
                 stream.seek(PARTITION_2_START * SECTOR_SIZE)
-                shutil.copyfileobj(stream, destination, PARTITION_2_BYTES)
+                copy_extent(stream, destination, PARTITION_2_BYTES)
         e2fsck_check = command("e2fsck", "-f", "-n", part2_file).strip()
 
     report = {
@@ -135,7 +144,7 @@ def verify(image, fit, work, has_rootfs=False):
             "filesystem": "ext4",
             "filesystem_check": e2fsck_check,
         }
-        report["persistence"] = "Dual-stage persistent rootfs on /dev/sda2 (AIR5ROOT); auto-expands on first boot"
+        report["persistence"] = "USB partition 2 labeled AIR5ROOT becomes writable /; auto-expands on first boot; same-disk AIR5BOOT mounts read-only at /boot"
     else:
         report["persistence"] = "RAM root; settings reset on reboot"
 

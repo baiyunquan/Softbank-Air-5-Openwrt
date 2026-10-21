@@ -10,15 +10,15 @@ not establish that the physical ports or SDX55 have passed hardware tests.
   and power on. No interactive U-Boot command is part of this procedure.
   The image supplies an MBR partition table and a bootable primary partition 1
   containing FAT16 and `/uimage-initramfs.itb`. Check `sha256sums` after download.
-- The FIT contains its own root filesystem. Configuration lives in RAM and
-  resets to the image defaults after reboot. There is no flash installation or
-  persistent USB-root procedure in this version.
+- Boot and rootfs are separate: partition 1 (`AIR5BOOT`, FAT16) contains the
+  FIT; partition 2 (`AIR5ROOT`, ext4) contains the writable OpenWrt rootfs.
+  Settings and installed packages persist on partition 2. The FIT also carries
+  a RAM recovery root for a missing/unusable persistent root.
 - Physical LAN1 is intended as `wan` (DHCP client, NAT). Physical LAN2 is
   intended as `lan`, management address **192.168.5.1/24**, DHCP range
   **192.168.5.100–249**. SSH and LuCI use normal OpenWrt first-boot defaults.
-- Port placement is an initial hypothesis: switch port1/PHY8 = LAN2;
-  switch port2/PHY9 = LAN1. Confirm this with cable insertion/carrier tests.
-  If management does not appear on LAN2, inspect both ports from serial.
+- Hardware-confirmed mapping: switch port1/PHY8 = physical LAN1 (WAN);
+  switch port2/PHY9 = physical LAN2 (management LAN).
 - The ath11k branch provisions `Air5-2G` / `Air5-5G` after validating the
   unit's ART (WPA2 AES key `Air5-OpenWrt`, country CN, HE20/HE80).
   NSS Wi-Fi acceleration and automatic cellular sessions remain disabled.
@@ -28,8 +28,11 @@ not establish that the physical ports or SDX55 have passed hardware tests.
 
 After a successful build, download `ckb01-usb-image-<builder SHA>` from Actions
 and unzip it. The file to write is **`air5-ckb01-usb.img`**, not the artifact ZIP
-or the standalone ITB. The disk image is 257 MiB: a 1 MiB MBR/alignment area
-followed by a 256 MiB FAT16 partition. Remaining USB capacity is unused.
+or the standalone ITB. A complete persistent disk image is 1281 MiB: a 1 MiB
+MBR/alignment area, a 256 MiB FAT16 boot partition and a 1024 MiB ext4 root
+partition. On first boot, partition 2 and its filesystem expand to use the
+remaining drive capacity. A warning-marked RAM-only image is 257 MiB and has
+no partition 2; consult `usb-image-report.json` rather than assuming persistence.
 
 On Linux, identify the USB drive with `lsblk`, unmount its mounted partitions,
 then write the image (this erases the target drive's previous layout):
@@ -46,6 +49,41 @@ A raw disk image writer can also write this IMG in its disk-image mode.
 Do not format the drive again afterward. Eject it, insert it into the powered-off
 Air 5, and power on. The intended path is the existing OEM `bootipq_usb`
 automatic loader. The MBR layout still needs physical boot validation.
+
+### Early boot and persistent-root recovery
+
+The PID-1 `/init` mounts proc/sysfs, then loads `/etc/modules-boot.d/` using
+OpenWrt's kmodloader before looking for the USB disk. The module-loading call
+has a 20-second timeout. It then waits up to 30 seconds using integer `sleep 1`
+for a unique partition 2 labeled `AIR5ROOT`; it does not assume the disk is
+always `sda`. It creates block nodes from sysfs without depending on hotplug.
+The explicit `blkid` package and USB boot modules are included in the firmware;
+UAS storage is also loaded early for USB drives using that transport.
+
+If the partition mounts as ext4 and contains OpenWrt init plus modules for the
+running kernel, `/init` unmounts proc/sysfs and switches to that writable root.
+The normal startup service mounts the same disk's `AIR5BOOT` read-only at
+`/boot`. The initramfs script chooses the root partition; the DT no longer
+hardcodes `root=/dev/sda2` or an indefinite kernel `rootwait`.
+
+Missing/ambiguous labels, mount errors or an incompatible rootfs produce a
+`ckb01-init:` message and select RAM recovery. Proc/sysfs are detached **before**
+the RAM copy, and `/proc`, `/sys`, `/new_root` are explicitly excluded from
+copy traversal. RAM recovery does not preserve configuration across reboot.
+
+After boot, inspect the actual mounts:
+
+```sh
+cat /proc/mounts
+cat /tmp/ckb01-usb-root
+df -h / /boot
+```
+
+Persistent mode has an ext4 `/` and a read-only vfat `/boot`; RAM mode has a
+tmpfs `/` and no managed `/boot` mount. Always deploy the FIT and rootfs from
+the same build. Replacing only the FIT can leave incompatible modules on the
+existing root partition. Writing a complete IMG replaces existing settings,
+so back up the old rootfs before upgrading an already configured drive.
 
 The 2026-10-19 hardware log showed `** Invalid partition 1 **` only when the
 previous whole-device FAT16 USB was inserted, followed by the OEM
@@ -148,7 +186,9 @@ After FIT validation, CI generates the disk image without root using `sfdisk`,
 start/length, FAT16 sector/cluster sizes, FAT hidden-sector count and volume
 length. It checks an extracted partition using `fsck.fat -n` and reads the FIT
 back from the filesystem to require byte-for-byte equality with the validated
-source. Only then is the image published with its SHA256 checksum.
+source. Persistent builds also populate partition 2 from the compiled rootfs
+tarball and inspect ext4 with `e2fsck -f -n`. Verification errors remain warnings;
+available raw FIT, IMG and logs are uploaded and marked accordingly.
 
 On `ckb01-ath11k-bringup`, CI additionally checks BDF reproducibility, the
 wireless helpers, and the actual initramfs/DTB using `ckb01-fit.py --wireless`.

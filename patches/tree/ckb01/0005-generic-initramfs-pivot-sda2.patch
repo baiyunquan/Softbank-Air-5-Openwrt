@@ -1,40 +1,129 @@
 diff --git a/target/linux/generic/other-files/init b/target/linux/generic/other-files/init
-index 521655b8c2..69a181ae75 100755
 --- a/target/linux/generic/other-files/init
 +++ b/target/linux/generic/other-files/init
-@@ -1,5 +1,29 @@
- #!/bin/sh
- # Copyright (C) 2006 OpenWrt.org
+@@ -1,14 +1,111 @@
+-#!/bin/sh
+-# Copyright (C) 2006 OpenWrt.org
+-export INITRAMFS=1
+-
+-# switch to tmpfs to allow run daemons in jail on initramfs boot
+-DIRS=$(echo *)
+-NEW_ROOT=/new_root
+-
+-mkdir -p $NEW_ROOT
+-mount -t tmpfs tmpfs $NEW_ROOT
+-
+-cp -pr $DIRS $NEW_ROOT
+-
+-exec switch_root $NEW_ROOT /sbin/init
++#!/bin/sh
++# Copyright (C) 2006 OpenWrt.org
++export PATH=/usr/sbin:/usr/bin:/sbin:/bin
++cd /
++NEW_ROOT=/new_root
 +
-+mount -t proc proc /proc 2>/dev/null
-+mount -t sysfs sysfs /sys 2>/dev/null
++boot_log() {
++	echo "ckb01-init: $*"
++}
 +
-+ROOT_DEV=""
-+for i in 1 2 3 4 5 6 7 8 9 10; do
-+	if [ -d "/sys/block/sda/sda2" ]; then
-+		mkdir -p /dev
-+		dev_num=$(cat /sys/block/sda/sda2/dev 2>/dev/null)
-+		[ -n "$dev_num" ] && mknod /dev/sda2 b ${dev_num%:*} ${dev_num#*:} 2>/dev/null
-+		ROOT_DEV="/dev/sda2"
-+		break
++# No procd/hotplug exists yet. Use static device nodes in the initramfs.
++make_block_node() {
++	local name="$1" numbers
++	[ -b "/dev/$name" ] && return 0
++	numbers=$(cat "/sys/class/block/$name/dev" 2>/dev/null) || return 1
++	mknod "/dev/$name" b "${numbers%:*}" "${numbers#*:}"
++}
++
++find_usb_root() {
++	local partition name label
++	ROOT_DEV=""
++	for partition in /sys/class/block/sd*; do
++		[ -r "$partition/partition" ] || continue
++		[ "$(cat "$partition/partition")" = 2 ] || continue
++		name=${partition##*/}
++		make_block_node "$name" || continue
++		label=$(blkid -p -s LABEL -o value "/dev/$name" 2>/dev/null)
++		[ "$label" = AIR5ROOT ] || continue
++		if [ -n "$ROOT_DEV" ]; then
++			boot_log "multiple AIR5ROOT partitions; using RAM recovery"
++			ROOT_DEV=""
++			return 2
++		fi
++		ROOT_DEV="/dev/$name"
++	done
++	[ -n "$ROOT_DEV" ]
++}
++
++unmount_early_fs() {
++	# MUST happen before copying the RAM root: never traverse proc/sysfs.
++	umount /sys 2>/dev/null || umount -l /sys 2>/dev/null
++	umount /proc 2>/dev/null || umount -l /proc 2>/dev/null
++}
++
++mkdir -p /proc /sys /dev /tmp "$NEW_ROOT"
++mount -t proc proc /proc
++mount -t sysfs sysfs /sys
++
++if tr '\000' '\n' </sys/firmware/devicetree/base/compatible | grep -qx 'oppo,ckb01'; then
++	boot_log "loading early USB/storage modules"
++	# Same boot-module entry point as procd init; do not load modules.d here
++	# (ath11k calibration hotplug must run in the final root).
++	if ! /bin/busybox timeout 20 /sbin/kmodloader /etc/modules-boot.d/; then
++		boot_log "early module load reported an error/timeout; continuing discovery"
 +	fi
-+	sleep 0.5
-+done
-+
-+if [ -n "$ROOT_DEV" ]; then
-+	mkdir -p /new_root
-+	if mount -t ext4 -o rw,noatime "$ROOT_DEV" /new_root 2>/dev/null; then
-+		umount /sys /proc 2>/dev/null
-+		exec switch_root /new_root /sbin/init
++	if command -v blkid >/dev/null 2>&1; then
++		boot_log "waiting up to 30 seconds for ext4 AIR5ROOT (partition 2)"
++		elapsed=0
++		while :; do
++			find_usb_root
++			found=$?
++			[ "$found" = 0 ] && break
++			[ "$found" = 2 ] && break
++			[ "$elapsed" -ge 30 ] && break
++			sleep 1
++			elapsed=$((elapsed + 1))
++		done
++		if [ -n "$ROOT_DEV" ]; then
++			boot_log "mounting $ROOT_DEV on $NEW_ROOT"
++			if mount -t ext4 -o rw,noatime "$ROOT_DEV" "$NEW_ROOT"; then
++				if [ -f "$NEW_ROOT/etc/openwrt_release" ] &&
++				   [ -x "$NEW_ROOT/sbin/init" ] &&
++				   [ -d "$NEW_ROOT/lib/modules/$(uname -r)" ]; then
++					boot_log "persistent root ready: $ROOT_DEV; starting OpenWrt"
++					unset INITRAMFS
++					unmount_early_fs
++					exec /bin/busybox switch_root "$NEW_ROOT" /sbin/init
++				fi
++				boot_log "AIR5ROOT lacks OpenWrt init or matching kernel modules"
++				umount "$NEW_ROOT" || umount -l "$NEW_ROOT"
++			else
++				boot_log "cannot mount AIR5ROOT; using RAM recovery"
++			fi
++		else
++			boot_log "no unique AIR5ROOT found"
++		fi
++	else
++		boot_log "blkid missing from initramfs"
 +	fi
 +fi
 +
- export INITRAMFS=1
- 
- # switch to tmpfs to allow run daemons in jail on initramfs boot
-@@ -11,4 +35,5 @@ mount -t tmpfs tmpfs $NEW_ROOT
- 
- cp -pr $DIRS $NEW_ROOT
- 
-+umount /sys /proc 2>/dev/null
- exec switch_root $NEW_ROOT /sbin/init
++# Normal initramfs recovery, with all early virtual mounts detached first.
++unmount_early_fs
++export INITRAMFS=1
++boot_log "starting RAM recovery; changes will not persist"
++mount -t tmpfs tmpfs "$NEW_ROOT" || {
++	boot_log "cannot allocate RAM root; opening emergency console"
++	exec /bin/sh </dev/console >/dev/console 2>&1
++}
++mkdir -p "$NEW_ROOT/proc" "$NEW_ROOT/sys"
++# Explicit exclusions also prevent copying /new_root into itself. Even a
++# failed unmount cannot make this loop descend into proc or sysfs.
++for entry in /* /.[!.]* /..?*; do
++	[ -e "$entry" ] || [ -L "$entry" ] || continue
++	case "$entry" in /proc|/sys|"$NEW_ROOT") continue;; esac
++	cp -pr "$entry" "$NEW_ROOT/" || {
++		boot_log "RAM copy failed at $entry; opening emergency console"
++		exec /bin/sh </dev/console >/dev/console 2>&1
++	}
++done
++exec /bin/busybox switch_root "$NEW_ROOT" /sbin/init
