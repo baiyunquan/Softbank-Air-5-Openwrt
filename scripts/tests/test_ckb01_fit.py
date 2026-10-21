@@ -23,6 +23,7 @@ REQUIRED = [
 ]
 WIRELESS_FILES = [
     "lib/functions/ckb01-wifi.sh", "etc/hotplug.d/firmware/10-ckb01-caldata",
+    "etc/init.d/ckb01-caldata", "etc/rc.d/S09ckb01-caldata",
     "etc/init.d/ckb01-wifi", "etc/rc.d/S95ckb01-wifi", "usr/sbin/ckb01-wifi-setup",
     "usr/sbin/iw", "usr/bin/iwinfo", "usr/sbin/hostapd",
     "lib/firmware/IPQ8074/q6_fw.mdt", "lib/firmware/IPQ8074/m3_fw.mdt",
@@ -73,6 +74,9 @@ class Ckb01FitTests(unittest.TestCase):
                            "lib/netifd/proto/ckb01_qmi.sh", "lib/netifd/ckb01-update",
                            "usr/sbin/ckb01-session", "usr/sbin/ckb01-modem-wait",
                            "etc/init.d/ckb01-modem", "etc/rc.d/S96ckb01-modem",
+                           "etc/init.d/ckb01-heartbeat", "etc/rc.d/S14ckb01-heartbeat",
+                           "usr/sbin/uhttpd", "usr/share/ckb01-modem/heartbeat/index.html",
+                           "etc/uci-defaults/98-ckb01-heartbeat",
                            "usr/share/ckb01-modem/mbn-sha256.json"]
             modem_paths += [f"usr/lib/{lib}.so.1" for lib in ("libqmi-glib", "libqrtr-glib", "libjson-c", "libglib-2.0", "libgio-2.0", "libgobject-2.0")]
             modem_paths += [f"lib/modules/6.18/{module}.ko" for module in ("mhi_net", "qrtr-mhi", "qrtr", "rmnet")]

@@ -1,21 +1,6 @@
 #!/bin/sh
 # Async procd service; never holds the rest of boot for channel discovery.
 
-start_heartbeat() {
- ip addr add 169.254.10.1/32 dev lo 2>/dev/null || true
- if pgrep -f '19888' >/dev/null 2>&1; then
-  return 0
- fi
- docroot=/www
- [ -d "$docroot" ] || docroot=/tmp
- if command -v uhttpd >/dev/null 2>&1; then
-  uhttpd -p 169.254.10.1:19888 -h "$docroot" 2>/dev/null &
- fi
- if ! pgrep -f '19888' >/dev/null 2>&1; then
-  (while :; do nc -l -p 19888 >/dev/null 2>&1 || sleep 1; done) &
- fi
-}
-
 retrain_pcie() {
  [ -e /sys/bus/pci/devices/0000:01:00.0 ] && return 0
  [ -n "$_retrain_attempted" ] && return 0
@@ -27,7 +12,7 @@ retrain_pcie() {
  fi
 }
 
-start_heartbeat
+# The independent S14ckb01-heartbeat procd service owns TCP19888.
 started=$(cut -d. -f1 /proc/uptime)
 while :; do
  retrain_pcie
@@ -36,14 +21,18 @@ while :; do
  if [ -n "$management" ]; then
   ip link set dev "$management" up
   ip addr replace 169.254.10.1/24 dev "$management"
-  start_heartbeat
  fi
  ready=$(printf '%s' "$discovery" | jsonfilter -e '@.ok')
  if [ "$ready" = true ]; then
   printf '%s\n' "$discovery" > /tmp/ckb01-modem-discovery.json
-  ping -c 2 -W 2 -I "$management" 169.254.10.2 > /tmp/ckb01-modem-management.txt 2>&1
-  ckb01-modem probe > /tmp/ckb01-modem-baseline.json 2>&1
-  logger -t ckb01-modem 'QMI/IPCR/SW/HW interfaces found; baseline saved; no automatic PDC changes'
+  if ! ping -c 2 -W 2 -I "$management" 169.254.10.2 > /tmp/ckb01-modem-management.txt 2>&1; then
+   logger -t ckb01-modem 'IP_SW0 exists but module management does not respond; skip automatic QMI probes/dialing, retain wired/Wi-Fi, no MHI reset'
+   exit 1
+  fi
+  if ! /bin/busybox timeout 45 ckb01-modem probe > /tmp/ckb01-modem-baseline.json 2>&1; then
+   logger -t ckb01-modem 'Baseline probe failed/timed out; enumerated interfaces do not prove working QMI or management transport'
+  fi
+  logger -t ckb01-modem 'MHI interfaces enumerated; inspect baseline for actual control responses; no automatic PDC changes'
   ifup cellular
   exit 0
  fi

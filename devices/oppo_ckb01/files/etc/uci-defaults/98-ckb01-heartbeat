@@ -1,0 +1,17 @@
+#!/bin/sh
+. /lib/functions/system.sh
+[ "$(board_name)" = oppo,ckb01 ] || exit 0
+# IP_SW0 is discovered dynamically and is deliberately not part of WAN/LAN.
+# A wildcard source zone puts this exact host/port rule in the input chain.
+uci -q batch <<'EOF'
+set firewall.ckb01_heartbeat=rule
+set firewall.ckb01_heartbeat.name='Allow-CKB01-SDX55-heartbeat'
+set firewall.ckb01_heartbeat.src='*'
+set firewall.ckb01_heartbeat.src_ip='169.254.10.2'
+set firewall.ckb01_heartbeat.dest_ip='169.254.10.1'
+set firewall.ckb01_heartbeat.proto='tcp'
+set firewall.ckb01_heartbeat.dest_port='19888'
+set firewall.ckb01_heartbeat.family='ipv4'
+set firewall.ckb01_heartbeat.target='ACCEPT'
+commit firewall
+EOF

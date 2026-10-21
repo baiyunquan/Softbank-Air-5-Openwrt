@@ -58,7 +58,7 @@ jobs:
             build-essential bison flex gawk gettext git glibc-source \
             libncurses-dev libssl-dev python3 rsync swig unzip wget \
             zlib1g-dev zstd u-boot-tools device-tree-compiler cpio file bsdextrautils \
-            dosfstools mtools fdisk clang lld pkg-config libqmi-glib-dev libqrtr-glib-dev libjson-c-dev
+            dosfstools mtools fdisk e2fsprogs fakeroot clang lld pkg-config libqmi-glib-dev libqrtr-glib-dev libjson-c-dev
           mkdir -p logs artifacts
           df -h .
 

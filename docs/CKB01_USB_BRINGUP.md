@@ -87,6 +87,27 @@ the same build. Replacing only the FIT can leave incompatible modules on the
 existing root partition. Writing a complete IMG replaces existing settings,
 so back up the old rootfs before upgrading an already configured drive.
 
+### Persistent-root ownership and wireless startup
+
+The rootfs tarball records root:root ownership. CI must extract it and run
+`mkfs.ext4 -d` inside the **same fakeroot session**; extracting as the ordinary
+runner user silently stamps uid/gid 1001 onto image files. In particular,
+ubusd rejects `/usr/share/acl.d/*.json` unless owned by root:root, and hostapd /
+wpa_supplicant then cannot publish their ubus objects. Image inspection reads
+the actual ext4 wpad ACL inode through debugfs; failure retains the IMG/GZ and
+reports a warning instead of discarding the image.
+
+`S09ckb01-caldata` re-reads and validates this machine's ART before S10boot
+loads ath11k. A calibration file persists on ext4, but its `/tmp` status does
+not persist; firmware hotplug alone cannot recreate that status when the file
+already exists. The service restores the status on every boot without writing
+ART. `S14ckb01-heartbeat` separately supervises a foreground uhttpd on TCP19888;
+an exact SDX55-to-IPQ input rule allows its traffic independently of LAN/WAN.
+
+An AP reaching `AP-ENABLED`, a listener accepting local HTTP, or MHI interfaces
+being enumerated are separate observations. None proves the SDX55 transport
+has exchanged QMI/RPC messages or that the module's restart monitor is satisfied.
+
 The 2026-10-19 hardware log showed `** Invalid partition 1 **` only when the
 previous whole-device FAT16 USB was inserted, followed by the OEM
 `SBAir5, CKB01_11.B.003_291_202304012310` login. That boot did not run the new

@@ -30,8 +30,11 @@ class Ckb01UsbImageTests(unittest.TestCase):
             etc_dir = rootfs_tree / "etc"
             etc_dir.mkdir(parents=True)
             (etc_dir / "openwrt_version").write_text("TEST-BUILD\n")
+            acl_dir = rootfs_tree / "usr/share/acl.d"
+            acl_dir.mkdir(parents=True)
+            (acl_dir / "wpad_acl.json").write_text("{}\n")
             rootfs_tar = work / "rootfs.tar.gz"
-            subprocess.run(["tar", "-czf", str(rootfs_tar), "-C", str(rootfs_tree), "."], check=True)
+            subprocess.run(["tar", "--owner=0", "--group=0", "-czf", str(rootfs_tar), "-C", str(rootfs_tree), "."], check=True)
 
             out_dir = work / "out"
             self.module.package(fit_file, out_dir, rootfs=rootfs_tar)

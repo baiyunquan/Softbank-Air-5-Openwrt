@@ -10,6 +10,7 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import re
 
 
 IMAGE_NAME = "air5-ckb01-usb.img"
@@ -116,6 +117,10 @@ def verify(image, fit, work, has_rootfs=False):
                 stream.seek(PARTITION_2_START * SECTOR_SIZE)
                 copy_extent(stream, destination, PARTITION_2_BYTES)
         e2fsck_check = command("e2fsck", "-f", "-n", part2_file).strip()
+        acl_stat = command("debugfs", "-R", "stat /usr/share/acl.d/wpad_acl.json", part2_file)
+        owner = re.search(r"User:\s*(\d+)\s+Group:\s*(\d+)", acl_stat)
+        require(owner is not None and owner.groups() == ("0", "0"),
+                "ext4 wpad ACL must be root:root; non-root archive extraction breaks ubus")
 
     report = {
         "image": image.name,
@@ -162,7 +167,7 @@ def package(fit, output, rootfs=None):
 
     required_tools = ["sfdisk", "mkfs.fat", "fsck.fat", "mcopy", "gzip"]
     if rootfs:
-        required_tools.extend(["mkfs.ext4", "e2fsck", "tar"])
+        required_tools.extend(["mkfs.ext4", "e2fsck", "debugfs", "tar", "fakeroot"])
     for tool in required_tools:
         require(shutil.which(tool), f"missing image build dependency: {tool}")
 
@@ -210,18 +215,32 @@ def package(fit, output, rootfs=None):
         if has_rootfs:
             rootfs_tree = work / "rootfs_tree"
             rootfs_tree.mkdir()
-            command("tar", "-xzf", str(rootfs), "-C", str(rootfs_tree))
 
             part2_file = work / "partition-2.ext4"
             with part2_file.open("wb") as stream:
                 stream.truncate(PARTITION_2_BYTES)
-            command("mkfs.ext4", "-F", "-L", "AIR5ROOT", "-d", str(rootfs_tree), str(part2_file))
+            # Both processes must share the same fakeroot metadata database.
+            # Plain non-root tar + mkfs -d stamps the CI UID onto every inode,
+            # and ubusd refuses ACL JSON not owned by uid/gid 0.
+            command("fakeroot", "--", "sh", "-ec",
+                    'tar --numeric-owner --same-owner -xzf "$1" -C "$2"; '
+                    'exec mkfs.ext4 -F -L AIR5ROOT -d "$2" "$3"',
+                    "ckb01-rootfs", rootfs, rootfs_tree, part2_file)
 
             with part2_file.open("rb") as src, candidate.open("r+b") as dst:
                 dst.seek(PARTITION_2_START * SECTOR_SIZE)
                 shutil.copyfileobj(src, dst, 1024 * 1024)
 
-        report = verify(candidate, fit, work, has_rootfs=has_rootfs)
+        try:
+            report = verify(candidate, fit, work, has_rootfs=has_rootfs)
+            report["validation"] = "passed"
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            # A diagnostic mismatch must not discard an already-built image.
+            report = {"image": IMAGE_NAME, "image_bytes": candidate.stat().st_size,
+                      "image_sha256": sha256(candidate), "fit_sha256": sha256(fit),
+                      "validation": "failed", "validation_error": str(error),
+                      "hardware_validation": "not performed"}
+            print(f"::warning title=CKB01 USB validation::{error}; retaining raw IMG")
 
         candidate_gz = work / IMAGE_GZ_NAME
         with candidate.open("rb") as f_in, gzip.open(candidate_gz, "wb", compresslevel=9) as f_out:
@@ -236,6 +255,7 @@ def package(fit, output, rootfs=None):
 
     (output / "usb-image-report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
+    return report
 
 
 def main():
@@ -247,8 +267,10 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        package(args.fit.resolve(), args.output.resolve(),
-                rootfs=args.rootfs.resolve() if args.rootfs else None)
+        report = package(args.fit.resolve(), args.output.resolve(),
+                         rootfs=args.rootfs.resolve() if args.rootfs else None)
+        if report.get("validation") == "failed":
+            parser.exit(1, "CKB01 USB verification failed; raw IMG/GZ and report retained for upload\n")
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         parser.exit(1, f"CKB01 USB image generation failed: {error}\n")
 

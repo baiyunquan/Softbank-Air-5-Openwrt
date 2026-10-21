@@ -1,5 +1,15 @@
 # CKB01 / SoftBank Air 5 ath11k 双频适配
 
+## 2026-10-21 持久化 rootfs 修复
+
+实机已确认：CI 普通用户解压 rootfs 后直接 mkfs.ext4，会使 ACL 文件归属变成
+1001:1001。ubusd 跳过这些 ACL，hostapd/wpa_supplicant 虽有进程却不能注册
+ubus 对象，netifd 因此反复等待。恢复归属并重载 ACL、重启 wpad 后对象出现。
+重新验证本机 ART、恢复 `/tmp/ckb01-caldata.status` 后，2.4GHz 信道1及5GHz
+信道149/80MHz均到达 AP-ENABLED。源码改为同一 fakeroot 会话保留打包所有权，
+并在每次启动的 S09 阶段校验 ART，避免持久化文件与临时状态不一致。
+本轮结果覆盖 AP 启动；终端关联和新启动服务的重启验收另行记录。
+
 ## 交付状态与默认配置
 
 这是 USB FIT/initramfs 无线适配首版。2026-10-20 已在一台 CKB01 实机上

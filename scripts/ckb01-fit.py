@@ -22,6 +22,7 @@ REQUIRED_FILES = (
 REQUIRED_MODULES = ("mhi_pci_generic", "mhi_wwan_ctrl")
 WIRELESS_FILES = (
     "lib/functions/ckb01-wifi.sh", "etc/hotplug.d/firmware/10-ckb01-caldata",
+    "etc/init.d/ckb01-caldata", "etc/rc.d/S09ckb01-caldata",
     "etc/init.d/ckb01-wifi", "etc/rc.d/S95ckb01-wifi", "usr/sbin/ckb01-wifi-setup",
     "usr/sbin/iw", "usr/bin/iwinfo", "usr/sbin/hostapd",
     "lib/firmware/IPQ8074/q6_fw.mdt", "lib/firmware/IPQ8074/m3_fw.mdt",
@@ -127,6 +128,9 @@ def verify_initramfs(path, kernel, wireless=False, modem=False):
                      "lib/netifd/proto/ckb01_qmi.sh", "lib/netifd/ckb01-update",
                      "usr/sbin/ckb01-session", "usr/sbin/ckb01-modem-wait",
                      "etc/init.d/ckb01-modem", "etc/rc.d/S96ckb01-modem",
+                     "etc/init.d/ckb01-heartbeat", "etc/rc.d/S14ckb01-heartbeat",
+                     "usr/sbin/uhttpd", "usr/share/ckb01-modem/heartbeat/index.html",
+                     "etc/uci-defaults/98-ckb01-heartbeat",
                      "usr/share/ckb01-modem/mbn-sha256.json"):
             require(bool(entries.get(name)), f"modem initramfs is missing {name}")
         for lib in ("libqmi-glib.so", "libqrtr-glib.so", "libjson-c.so", "libglib-2.0.so", "libgio-2.0.so", "libgobject-2.0.so"):
@@ -240,7 +244,8 @@ def package(source, initramfs, output, wireless=False, modem=False):
         shutil.copyfile(source, fit)
         dtb, paths, report = verify_fit(fit, initramfs, work, wireless, modem)
         alias = "/configurations/config@hk09"
-        command("fdtput", "-c", fit, alias)
+        if "config@hk09" not in children(fit, "/configurations"):
+            command("fdtput", "-c", fit, alias)
         for name, value in (("description", "OpenWrt OPPO CKB01 HK09"),
                             ("kernel", "kernel@1"), ("fdt", "fdt@1")):
             command("fdtput", "-t", "s", fit, alias, name, value)
