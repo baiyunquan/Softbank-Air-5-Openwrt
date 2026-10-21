@@ -16,6 +16,7 @@ on:
       - 'scripts/ckb01-usb-image.py'
       - 'scripts/ckb01-bdf.py'
       - 'scripts/ckb01-oem-bundle.py'
+      - 'scripts/ckb01-toolchain.py'
       - 'scripts/tests/test_ckb01_*.py'
       - 'tools/ath11k-bdencoder'
       - 'tools/ckb01-oem-recover/**'
@@ -108,6 +109,16 @@ jobs:
           path: openwrt
           persist-credentials: false
 
+      - name: Restore OpenWrt host tools cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            openwrt/staging_dir/host
+            openwrt/build_dir/host
+          key: ckb01-host-tools-${{ runner.os }}-${{ env.UPSTREAM_SHA }}
+          restore-keys: |
+            ckb01-host-tools-${{ runner.os }}-${{ env.UPSTREAM_SHA }}
+
       - name: Restore source downloads and compiler cache
         uses: actions/cache@v6
         with:
@@ -115,6 +126,24 @@ jobs:
           key: ckb01-${{ runner.os }}-${{ env.UPSTREAM_SHA }}-${{ github.run_id }}
           restore-keys: |
             ckb01-${{ runner.os }}-${{ env.UPSTREAM_SHA }}-
+
+      - name: Cache prebuilt OpenWrt toolchain
+        id: cache_toolchain
+        uses: actions/cache@v6
+        with:
+          path: toolchain-prebuilt
+          key: ckb01-prebuilt-toolchain-qualcommax-ipq807x-gcc-14.4.0
+
+      - name: Initialize prebuilt OpenWrt toolchain
+        run: |
+          set -euo pipefail
+          python3 builder/scripts/ckb01-toolchain.py \
+            --setup \
+            --openwrt-dir openwrt \
+            --dest-dir toolchain-prebuilt
+          tc_root="$(python3 -c "import importlib.util; spec = importlib.util.spec_from_file_location('ckb01_toolchain', 'builder/scripts/ckb01-toolchain.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print(m.find_toolchain_root('toolchain-prebuilt'))")"
+          echo "EXTERNAL_TOOLCHAIN_ROOT=$tc_root" >> "$GITHUB_ENV"
+          echo "Toolchain root: $tc_root"
 
       - name: Prepare CKB01 patch, configuration and overlay
         env:
@@ -132,6 +161,9 @@ jobs:
           assert 'CONFIG_TARGET_MULTI_PROFILE=y' not in lines
           assert 'CONFIG_TARGET_PER_DEVICE_ROOTFS=y' not in lines
           assert 'CONFIG_CCACHE=y' in lines, 'OpenWrt compiler cache is not enabled'
+          assert 'CONFIG_EXTERNAL_TOOLCHAIN=y' in lines, 'OpenWrt external toolchain is not enabled'
+          assert 'CONFIG_EXTERNAL_GCC_VERSION="14.4.0"' in lines, 'External GCC version mismatch'
+          assert 'CONFIG_EXTERNAL_TOOLCHAIN_LIBC_USE_MUSL=y' in lines, 'External toolchain musl libc not enabled'
           ccache_dir = next((line for line in lines if line.startswith('CONFIG_CCACHE_DIR=')), None)
           assert ccache_dir in (None, 'CONFIG_CCACHE_DIR=""'), ccache_dir
           for symbol in ('TARGET_ROOTFS_INITRAMFS', 'TARGET_INITRAMFS_COMPRESSION_ZSTD',
@@ -177,7 +209,7 @@ jobs:
           toolchain_tree="$(git -C openwrt rev-parse HEAD:toolchain)"
           fingerprint="$({
             printf '%s\n' "$toolchain_tree"
-            grep -E '^CONFIG_(BINUTILS|GCC|LIBC|MUSL|GLIBC)_' openwrt/.config || true
+            grep -E '^CONFIG_(BINUTILS|GCC|LIBC|MUSL|GLIBC|EXTERNAL|TOOLCHAIN)_' openwrt/.config || true
             gcc --version
             as --version
           } | sha256sum | cut -c1-16)"

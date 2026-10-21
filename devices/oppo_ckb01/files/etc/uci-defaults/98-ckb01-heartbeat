@@ -1,6 +1,16 @@
 #!/bin/sh
 . /lib/functions/system.sh
 [ "$(board_name)" = oppo,ckb01 ] || exit 0
+# S14's temporary address is otherwise removed when netifd initializes lo.
+# Keep the listener's local destination even when IP_SW0 is not yet present.
+if [ "$(uci -q get network.loopback.device)" = lo ] &&
+   [ "$(uci -q get network.loopback.proto)" = static ]; then
+	uci -q del_list network.loopback.ipaddr='169.254.10.1/32'
+	uci add_list network.loopback.ipaddr='169.254.10.1/32'
+	uci commit network
+else
+	logger -t ckb01-heartbeat 'Custom loopback configuration; retain 169.254.10.1/32 manually'
+fi
 # IP_SW0 is discovered dynamically and is deliberately not part of WAN/LAN.
 # A wildcard source zone puts this exact host/port rule in the input chain.
 uci -q batch <<'EOF'

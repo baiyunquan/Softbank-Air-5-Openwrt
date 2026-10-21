@@ -17,6 +17,7 @@
 #                 a name already in feeds.conf replaces that feed (fork stand-in)
 #   CONFIG_FRAGMENT  repo-relative .config fragment appended last
 #   COMMON        devices/<COMMON> holding the shared config and overlays (default: common)
+#   EXTERNAL_TOOLCHAIN_ROOT  path to prebuilt OpenWrt toolchain root (or auto-detected)
 
 set -euo pipefail
 
@@ -81,10 +82,10 @@ log::info "Updating + installing all feeds"
 shopt -s nullglob
 for p in "$BUILDER_REPO/patches/feeds/$VARIANT"/*/*.patch; do
   feed="feeds/$(basename "$(dirname "$p")")"
-  if patch -p1 -d "$feed" --dry-run --forward <"$p" >/dev/null 2>&1; then
+  if patch -p1 -d "$feed" --dry-run --batch --forward <"$p" >/dev/null 2>&1; then
     log::info "Patching $feed with $(basename "$p")"
-    patch -p1 -d "$feed" --forward <"$p"
-  elif patch -p1 -d "$feed" --dry-run --reverse <"$p" >/dev/null 2>&1; then
+    patch -p1 -d "$feed" --batch --forward <"$p"
+  elif patch -p1 -d "$feed" --dry-run --batch --reverse <"$p" >/dev/null 2>&1; then
     log::info "Skipping $(basename "$p") (already applied)"
   else
     log::die "$(basename "$p") does not apply to $feed"
@@ -93,10 +94,10 @@ done
 # patches/tree/<variant>/*.patch carry fixes still pending upstream; one that
 # main has merged reverse-applies and is skipped.
 for p in "$BUILDER_REPO/patches/tree/$VARIANT"/*.patch; do
-  if patch -p1 --dry-run --forward <"$p" >/dev/null 2>&1; then
+  if patch -p1 --dry-run --batch --forward <"$p" >/dev/null 2>&1; then
     log::info "Patching the tree with $(basename "$p")"
-    patch -p1 --forward <"$p"
-  elif patch -p1 --dry-run --reverse <"$p" >/dev/null 2>&1; then
+    patch -p1 --batch --forward <"$p"
+  elif patch -p1 --dry-run --batch --reverse <"$p" >/dev/null 2>&1; then
     log::info "Skipping $(basename "$p") (already applied)"
   else
     log::die "$(basename "$p") does not apply to the tree"
@@ -110,6 +111,26 @@ if [[ "$VARIANT" == ckb01 ]]; then
   for package in ckb01-modem ckb01-oem-tools; do
     rsync -a --delete "$BUILDER_REPO/packages/$package/" "package/ckb01/$package/"
   done
+fi
+
+EXTERNAL_TOOLCHAIN_ROOT="${EXTERNAL_TOOLCHAIN_ROOT:-}"
+if [[ -z "$EXTERNAL_TOOLCHAIN_ROOT" && -d "$BUILDER_REPO/toolchain-prebuilt" ]]; then
+  EXTERNAL_TOOLCHAIN_ROOT="$BUILDER_REPO/toolchain-prebuilt"
+fi
+if [[ -z "$EXTERNAL_TOOLCHAIN_ROOT" && -d "$BUILDER_REPO/../toolchain-prebuilt" ]]; then
+  EXTERNAL_TOOLCHAIN_ROOT="$BUILDER_REPO/../toolchain-prebuilt"
+fi
+
+tc_fragment=""
+if [[ -n "$EXTERNAL_TOOLCHAIN_ROOT" ]]; then
+  log::info "Resolving external prebuilt toolchain from $EXTERNAL_TOOLCHAIN_ROOT"
+  tc_fragment="$(mktemp -t ckb01-tc-XXXXXX.config)"
+  python3 "$BUILDER_REPO/scripts/ckb01-toolchain.py" \
+    --dest-dir "$EXTERNAL_TOOLCHAIN_ROOT" \
+    --openwrt-dir "$OPENWRT_DIR" \
+    --generate-config \
+    --output "$tc_fragment"
+  CONFIGS+=("$tc_fragment")
 fi
 
 # 2. Assemble .config from the common + device configs, then resolve.
@@ -131,6 +152,10 @@ done < <(cat "${CONFIGS[@]}" |
   grep -E '^CONFIG_[A-Za-z0-9_-]+=' |
   awk -F= '{ last[$1] = $0 } END { for (s in last) print last[s] }' |
   grep -vE '=n$')
+
+if [[ -n "$tc_fragment" && -f "$tc_fragment" ]]; then
+  rm -f "$tc_fragment"
+fi
 
 if ((${#dropped[@]})); then
   log::error "defconfig dropped ${#dropped[@]} requested symbol(s) for device '$DEVICE':"

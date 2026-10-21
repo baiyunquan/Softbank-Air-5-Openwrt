@@ -103,6 +103,10 @@ not persist; firmware hotplug alone cannot recreate that status when the file
 already exists. The service restores the status on every boot without writing
 ART. `S14ckb01-heartbeat` separately supervises a foreground uhttpd on TCP19888;
 an exact SDX55-to-IPQ input rule allows its traffic independently of LAN/WAN.
+The default configuration also keeps `169.254.10.1/32` in netifd's loopback
+address list. An early `ip addr add` alone is insufficient: netifd removes
+unconfigured addresses when it initializes loopback, even while uhttpd is
+still listening. Preserve the normal `127.0.0.1/8` address alongside it.
 
 An AP reaching `AP-ENABLED`, a listener accepting local HTTP, or MHI interfaces
 being enumerated are separate observations. None proves the SDX55 transport
