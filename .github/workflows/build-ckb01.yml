@@ -294,8 +294,15 @@ jobs:
             echo '::warning title=CKB01 USB image skipped::No FIT is available; build metadata and logs will still be uploaded.'
             exit 0
           fi
+          rootfs_tar=$(find openwrt/bin/targets/qualcommax/ipq807x -name '*oppo_ckb01*-rootfs.tar.gz' -type f 2>/dev/null | head -n 1 || true)
+          rootfs_opts=()
+          if [[ -n "$rootfs_tar" && -s "$rootfs_tar" ]]; then
+            echo "Found OpenWrt rootfs tarball: $rootfs_tar"
+            cp "$rootfs_tar" artifacts/
+            rootfs_opts=(--rootfs "$rootfs_tar")
+          fi
           if python3 builder/scripts/ckb01-usb-image.py artifacts/uimage-initramfs.itb \
-            --output artifacts 2>&1 | tee logs/usb-image-validation.log; then
+            "${rootfs_opts[@]}" --output artifacts 2>&1 | tee logs/usb-image-validation.log; then
             echo 'USB image validation passed.'
           else
             validation_status=${PIPESTATUS[0]}
@@ -308,10 +315,10 @@ jobs:
           {
             echo '## Complete USB disk image'
             # shellcheck disable=SC2016
-            echo '- Write `air5-ckb01-usb.img` to the whole USB drive, not a partition.'
-            echo '- MBR partition table; bootable partition 1: 256 MiB FAT16 at LBA 2048.'
+            echo '- Write `air5-ckb01-usb.img` (or decompressed `air5-ckb01-usb.img.gz`) to the whole USB drive, not a partition.'
+            echo '- MBR partition table; bootable partition 1: 256 MiB FAT16 (`AIR5BOOT`) at LBA 2048.'
+            echo '- Partition 2: 1024 MiB ext4 (`AIR5ROOT`) persistent rootfs; auto-expands on first boot.'
             echo '- Intended to boot through OEM USB autoboot; no interactive U-Boot command needed.'
-            echo '- New layout needs physical boot validation; RAM-root configuration is not persistent.'
             if [[ -f artifacts/usb-image-report.json ]]; then
               cat artifacts/usb-image-report.json
             else

@@ -1,0 +1,21 @@
+#!/bin/sh
+# Auto-expand Partition 2 (AIR5ROOT) to fill remaining physical disk space
+
+root_dev=$(findmnt -n -o SOURCE / 2>/dev/null)
+case "$root_dev" in
+    /dev/sd[a-z]2)
+        disk="/dev/$(lsblk -no pkname "$root_dev" 2>/dev/null)"
+        if [ -b "$disk" ]; then
+            logger -t ckb01-expand "Expanding partition 2 on $disk..."
+            printf ", +\n" | sfdisk -N 2 --force "$disk" 2>/dev/null || true
+            partx -u "$root_dev" 2>/dev/null || true
+            resize2fs "$root_dev" 2>/dev/null || true
+            logger -t ckb01-expand "Root filesystem resized. Available: $(df -h / | awk 'NR==2 {print $2}')"
+        fi
+        ;;
+    *)
+        logger -t ckb01-expand "Rootfs is not on /dev/sd*2 ($root_dev), skipping expand."
+        ;;
+esac
+
+exit 0
