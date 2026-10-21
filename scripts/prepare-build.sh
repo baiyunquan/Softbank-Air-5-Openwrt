@@ -107,7 +107,9 @@ shopt -u nullglob
 # Local device packages must exist before Kconfig scans the tree.
 if [[ "$VARIANT" == ckb01 ]]; then
   mkdir -p package/ckb01
-  rsync -a --delete "$BUILDER_REPO/packages/ckb01-modem/" package/ckb01/ckb01-modem/
+  for package in ckb01-modem ckb01-oem-tools; do
+    rsync -a --delete "$BUILDER_REPO/packages/$package/" "package/ckb01/$package/"
+  done
 fi
 
 # 2. Assemble .config from the common + device configs, then resolve.

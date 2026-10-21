@@ -11,9 +11,11 @@ on:
       - 'patches/tree/ckb01/**'
       - 'packages/**'
       - 'docs/CKB01_SDX55_PORTING.md'
+      - 'docs/CKB01_OEM_MANAGEMENT.md'
       - 'scripts/ckb01-fit.py'
       - 'scripts/ckb01-usb-image.py'
       - 'scripts/ckb01-bdf.py'
+      - 'scripts/ckb01-oem-bundle.py'
       - 'scripts/tests/test_ckb01_*.py'
       - 'tools/ath11k-bdencoder'
       - 'tools/ckb01-oem-recover/**'
@@ -60,7 +62,7 @@ jobs:
           mkdir -p logs artifacts
           df -h .
 
-      - name: Check OEM BDF, calibration helpers and FIT validation
+      - name: Check OEM BDF, management runtime and FIT validation
         id: preflight
         continue-on-error: true
         working-directory: builder
@@ -68,9 +70,11 @@ jobs:
           set -uo pipefail
           python3 scripts/ckb01-bdf.py --check 2>&1 | tee ../logs/preflight-bdf.log
           bdf_status=${PIPESTATUS[0]}
+          python3 scripts/ckb01-oem-bundle.py --check 2>&1 | tee ../logs/preflight-oem-runtime.log
+          oem_status=${PIPESTATUS[0]}
           python3 -m unittest discover -s scripts/tests -p 'test_ckb01_*.py' -v 2>&1 | tee ../logs/preflight-tests.log
           tests_status=${PIPESTATUS[0]}
-          if [[ $bdf_status -ne 0 || $tests_status -ne 0 ]]; then
+          if [[ $bdf_status -ne 0 || $oem_status -ne 0 || $tests_status -ne 0 ]]; then
             exit 1
           fi
 
@@ -85,6 +89,14 @@ jobs:
         run: |
           if ! bash builder/tools/ckb01-oem-recover/build.sh artifacts 2>&1 | tee logs/recovery-build.log; then
             echo '::warning title=CKB01 OEM recovery::Standalone recovery tool build failed; firmware compile and uploads continue.'
+          fi
+
+      - name: Package OEM userspace management overlay
+        continue-on-error: true
+        run: |
+          if ! python3 builder/scripts/ckb01-oem-bundle.py \
+              --overlay artifacts/ckb01-oem-management-overlay.tar.gz 2>&1 | tee logs/oem-overlay-build.log; then
+            echo '::warning title=CKB01 OEM overlay::Overlay packaging failed; firmware compilation and artifact uploads continue.'
           fi
 
       - name: Checkout pinned OpenWrt source
@@ -228,7 +240,16 @@ jobs:
           cp builder/docs/CKB01_USB_BRINGUP.md artifacts/README.md
           cp builder/docs/CKB01_WIFI_PORTING.md artifacts/
           cp builder/docs/CKB01_SDX55_PORTING.md artifacts/
+          cp builder/docs/CKB01_OEM_MANAGEMENT.md artifacts/
           cp builder/devices/oppo_ckb01/firmware/provenance.json artifacts/bdf-provenance.json
+          cp builder/packages/ckb01-oem-tools/vendor/provenance.json artifacts/oem-runtime-provenance.json
+          cp builder/packages/ckb01-oem-tools/payload/provenance.json artifacts/oem-adb-payload-provenance.json
+          mkdir -p artifacts/oem-management-packages
+          find openwrt/bin -type f \
+            \( -name 'ckb01-oem-tools*.apk' -o -name 'ckb01-oem-tools*.ipk' \
+               -o -name 'adb-*.apk' -o -name 'adb_*.ipk' \
+               -o -name 'coreutils-timeout-*.apk' -o -name 'coreutils-timeout_*.ipk' \) \
+            -exec cp {} artifacts/oem-management-packages/ \;
           find openwrt/bin/targets/qualcommax/ipq807x -maxdepth 1 -type f \
             \( -name '*.manifest' -o -name '*.buildinfo' -o -name 'profiles.json' \) \
             -exec cp {} artifacts/ \;
@@ -271,6 +292,7 @@ jobs:
             echo '- USB filename: `uimage-initramfs.itb`'
             echo '- LAN1: DHCP WAN; LAN2: management at 192.168.5.1'
             echo '- APs: Air5-2G / Air5-5G; key Air5-OpenWrt; calibration read from unit ART'
+            echo '- SDX55 management: ckb01-oem exec/pull/push; ckb01-adb enable/shell/disable (on demand, no automatic EDL/reboot)'
             echo '- RAM root; hardware validation pending.'
             if [[ -f artifacts/fit-report.json ]]; then
               cat artifacts/fit-report.json

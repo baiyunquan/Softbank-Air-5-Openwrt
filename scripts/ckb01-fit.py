@@ -31,6 +31,13 @@ WIRELESS_FILES += tuple(f"lib/firmware/IPQ8074/q6_fw.b{index:02d}" for index in 
 WIRELESS_FILES += tuple(f"lib/firmware/IPQ8074/m3_fw.b{index:02d}" for index in (0, 1, 2))
 BDF_PATH = "lib/firmware/ath11k/IPQ8074/hw2.0/board-2.bin"
 BDF_SHA256 = "d53ce59c18ccc20b83f485aa7328ab1b07e837f724642da7a2bd31c574c8de16"
+OEM_PACKAGE = Path(__file__).resolve().parents[1] / "packages/ckb01-oem-tools"
+OEM_FILES = (
+    "usr/bin/oatprsync", "usr/bin/adb", "usr/libexec/timeout-coreutils",
+    "usr/sbin/ckb01-oem", "usr/sbin/ckb01-adb", "lib/functions/ckb01-oem.sh",
+    "usr/lib/ckb01-oem/adb-control.sh", "usr/share/ckb01-oem/adb-tcp-property.so",
+    "usr/share/ckb01-oem/adb-payload.json", "usr/share/ckb01-oem/runtime-provenance.json",
+)
 
 
 def command(*args):
@@ -78,6 +85,19 @@ def archive_entries(data):
     raise ValueError("initramfs archive has no TRAILER!!!")
 
 
+def verify_oem_runtime(entries):
+    for name in OEM_FILES:
+        require(bool(entries.get(name)), f"OEM management initramfs is missing {name}")
+    record = json.loads((OEM_PACKAGE / "vendor/provenance.json").read_text())
+    for name, metadata in record["files"].items():
+        installed = "usr/lib/ckb01-oem/runtime/" + name
+        require(hashlib.sha256(entries.get(installed, b"")).hexdigest() == metadata["sha256"],
+                f"OEM management runtime differs from provenance: {installed}")
+    payload = json.loads((OEM_PACKAGE / "payload/provenance.json").read_text())
+    require(hashlib.sha256(entries["usr/share/ckb01-oem/adb-tcp-property.so"]).hexdigest() == payload["sha256"],
+            "SDX55 ARMv7 ADB payload differs from provenance")
+
+
 def verify_initramfs(path, kernel, wireless=False, modem=False):
     compressed = path.read_bytes()
     require(bool(compressed) and compressed in kernel,
@@ -102,6 +122,7 @@ def verify_initramfs(path, kernel, wireless=False, modem=False):
                 "wireless initramfs must obtain unit calibration from ART at runtime")
         modules += ("ath11k", "ath11k_ahb", "mac80211", "cfg80211")
     if modem:
+        verify_oem_runtime(entries)
         for name in ("usr/sbin/ckb01-modem", "usr/bin/qmicli", "usr/libexec/qmi-proxy",
                      "lib/netifd/proto/ckb01_qmi.sh", "lib/netifd/ckb01-update",
                      "usr/sbin/ckb01-session", "usr/sbin/ckb01-modem-wait",

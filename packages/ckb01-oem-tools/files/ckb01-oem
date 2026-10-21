@@ -1,0 +1,85 @@
+#!/bin/sh
+. /lib/functions/ckb01-oem.sh
+umask 077
+
+usage() {
+ cat <<'EOF'
+Usage:
+  ckb01-oem status
+  ckb01-oem network
+  ckb01-oem exec 'COMMAND'       print module stdout/stderr and return its exit code
+  ckb01-oem pull REMOTE LOCAL
+  ckb01-oem push LOCAL REMOTE
+Environment: CKB01_OEM_HOST=169.254.10.2, CKB01_OEM_TIMEOUT=30 (1..600 seconds).
+Commands execute on SDX55 via the original command proxy, without DIAG.
+EOF
+}
+
+remote_exec() {
+ [ "$#" = 1 ] || { usage >&2; return 64; }
+ ckb01_oem_network || return $?
+ ckb01_oem_work=$(mktemp -d /tmp/ckb01-oem.XXXXXX) || return 1
+ trap '[ -z "${ckb01_oem_work:-}" ] || rm -rf -- "$ckb01_oem_work"' EXIT
+ # The basename is generated locally; no user text is interpolated into paths.
+ remote=/tmp/${ckb01_oem_work##*/}
+ trap 'ckb01_oem_error "interrupted; remote command may still run; module evidence: $remote.*"; exit 130' INT
+ trap 'ckb01_oem_error "interrupted; remote command may still run; module evidence: $remote.*"; exit 143' HUP TERM
+ script="umask 077; ( $1
+) </dev/null > '$remote.out' 2> '$remote.err'; ckb01_rc=\$?; printf '%s\\n' \"\$ckb01_rc\" > '$remote.rc'; exit 0"
+ transport=0
+ ckb01_oem_call -e "$CKB01_OEM_HOST" "$script" >"$ckb01_oem_work/transport" 2>&1 || transport=$?
+ # Do not re-execute a command when the proxy times out: its result is ambiguous.
+ if ! ckb01_oem_call -g "$CKB01_OEM_HOST" "$ckb01_oem_work/rc" "$remote.rc" >>"$ckb01_oem_work/transport" 2>&1; then
+  cat "$ckb01_oem_work/transport" >&2
+  ckb01_oem_error "no command exit status (transport=$transport); not retried. Module output: $remote.out / $remote.err / $remote.rc"
+  [ "$transport" -ne 0 ] && return "$transport"
+  return 74
+ fi
+ rc=$(cat "$ckb01_oem_work/rc")
+ case "$rc" in ''|*[!0-9]*) ckb01_oem_error "invalid module exit status; evidence retained at $remote.*"; return 74;; esac
+ [ "$rc" -le 255 ] || return 74
+ for stream in out err; do
+  if ! ckb01_oem_call -g "$CKB01_OEM_HOST" "$ckb01_oem_work/$stream" "$remote.$stream" >>"$ckb01_oem_work/transport" 2>&1; then
+   cat "$ckb01_oem_work/transport" >&2
+   ckb01_oem_error "could not retrieve $stream; module output retained at $remote.*"
+   return 74
+  fi
+ done
+ cat "$ckb01_oem_work/out"
+ cat "$ckb01_oem_work/err" >&2
+ ckb01_oem_call -e "$CKB01_OEM_HOST" "rm -f '$remote.out' '$remote.err' '$remote.rc'; exit 0" >/dev/null 2>&1 || :
+ return "$rc"
+}
+
+command=${1:-status}
+[ "$#" = 0 ] || shift
+case "$command" in
+ status)
+  ckb01_oem_guard || exit $?
+  printf 'module_address=%s\nclient=/usr/lib/ckb01-oem/runtime/bin/oatprsync\n' "$CKB01_OEM_HOST"
+  if ckb01_oem_discover; then
+   printf 'management_interface=%s\n' "$ckb01_oem_management"
+   ip -4 addr show dev "$ckb01_oem_management"
+   ip route get "$CKB01_OEM_HOST"
+  else
+   printf 'management_interface=unavailable\n'
+   printf '%s\n' "$ckb01_oem_discovery"
+   exit 69
+  fi
+  ;;
+ network) [ "$#" = 0 ] || exit 64; ckb01_oem_network ;;
+ exec) [ "${1:-}" != -- ] || shift; remote_exec "$@" ;;
+ pull)
+  [ "$#" = 2 ] || { usage >&2; exit 64; }
+  ckb01_oem_network || exit $?
+  ckb01_oem_call -g "$CKB01_OEM_HOST" "$2" "$1"
+  ;;
+ push)
+  [ "$#" = 2 ] || { usage >&2; exit 64; }
+  [ -f "$1" ] || { ckb01_oem_error "local file does not exist: $1"; exit 66; }
+  ckb01_oem_network || exit $?
+  ckb01_oem_call -p "$CKB01_OEM_HOST" "$1" "$2"
+  ;;
+ help|-h|--help) usage ;;
+ *) usage >&2; exit 64 ;;
+esac

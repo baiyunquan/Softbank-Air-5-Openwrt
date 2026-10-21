@@ -72,6 +72,10 @@ ckb01-n78-test 300 > /mnt/usb/air5-backup/cu/n78-test.log 2>&1
 
 实机清单：3次冷启动、3次暖启动；管理ping和只读查询；蜂窝IP、DNS、HTTPS；Wi-Fi客户端经蜂窝上网；有线备用；至少30分钟联网及复位/MHI/AP/端口检查。缺覆盖或证据的项目标为待验收。
 
+## 原厂模块命令与ADB管理
+
+镜像默认包含隔离的原厂命令/文件代理客户端及依赖。用 `ckb01-oem exec 'id; uname -a'` 执行模块命令，`ckb01-adb shell` 按需启用模块RAM中的TCP ADB，`ckb01-adb disable` 恢复原adbd服务及GPIO92。该路径依赖IP_SW0管理网，不依赖DIAG或蜂窝拨号。完整操作、恢复和验收边界见 [CKB01_OEM_MANAGEMENT.md](CKB01_OEM_MANAGEMENT.md)。
+
 ## 构建
 
 本地包使用libqmi、libqrtr-glib、libjson-c和完整QMI消息集。沿用下载与ccache缓存；驱动变化仍需重新编译内核。FIT验证检查实际嵌入initramfs中的工具、协议、模块和依赖，以及既有哈希与内存边界；所有验证失败只警告，保留原始ITB、可用IMG及日志上传。实际编译错误单独失败。

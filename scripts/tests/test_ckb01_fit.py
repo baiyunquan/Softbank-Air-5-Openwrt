@@ -9,6 +9,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import tarfile
 import unittest
 
 
@@ -77,6 +78,22 @@ class Ckb01FitTests(unittest.TestCase):
             modem_paths += [f"lib/modules/6.18/{module}.ko" for module in ("mhi_net", "qrtr-mhi", "qrtr", "rmnet")]
             paths += modem_paths
             contents.update({name: b"test modem payload" for name in modem_paths})
+            # Keep the existing modem fixture aligned with the actual installed
+            # OEM paths and immutable vendor hashes; no guessed global libraries.
+            oem = PACKAGER.parents[1] / "packages/ckb01-oem-tools"
+            oem_paths = ["usr/bin/oatprsync", "usr/bin/adb", "usr/libexec/timeout-coreutils",
+                         "usr/sbin/ckb01-oem", "usr/sbin/ckb01-adb", "lib/functions/ckb01-oem.sh",
+                         "usr/lib/ckb01-oem/adb-control.sh", "usr/share/ckb01-oem/adb-tcp-property.so",
+                         "usr/share/ckb01-oem/adb-payload.json", "usr/share/ckb01-oem/runtime-provenance.json"]
+            paths += oem_paths
+            contents.update({name: b"OEM fixture" for name in oem_paths})
+            contents["usr/share/ckb01-oem/adb-tcp-property.so"] = (oem / "payload/adb-tcp-property.so").read_bytes()
+            with tarfile.open(oem / "vendor/runtime.tar.gz") as runtime:
+                for entry in runtime.getmembers():
+                    if entry.isfile():
+                        name = "usr/lib/ckb01-oem/runtime/" + entry.name
+                        paths.append(name)
+                        contents[name] = runtime.extractfile(entry).read()
         archive = cpio(paths, contents)
         if compressed_initramfs:
             archive = subprocess.run(["zstd", "-q", "-c"], input=archive, capture_output=True,

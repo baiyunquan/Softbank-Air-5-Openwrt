@@ -1,0 +1,85 @@
+#!/bin/sh
+. /lib/functions/ckb01-oem.sh
+umask 077
+target=$CKB01_OEM_HOST:5555
+lock=/var/lock/ckb01-adb.lock
+controller=/usr/lib/ckb01-oem/adb-control.sh
+payload=/usr/share/ckb01-oem/adb-tcp-property.so
+remote=/tmp/ckb01-adb
+
+usage() {
+ cat <<'EOF'
+Usage: ckb01-adb enable | connect | status | disable
+       ckb01-adb shell [COMMAND...]
+       ckb01-adb pull REMOTE [LOCAL]
+       ckb01-adb push LOCAL REMOTE
+shell/pull/push enable the temporary module TCP adbd when needed.
+disable restores the original module adbd service and captured GPIO92 state.
+No persistent module startup changes, EDL or automatic reboot are performed.
+EOF
+}
+unlock() {
+ [ "$(cat "$lock/pid" 2>/dev/null)" = "$$" ] || return 0
+ rm -f "$lock/pid"
+ rmdir "$lock" 2>/dev/null || :
+}
+take_lock() {
+ mkdir -p /var/lock
+ if ! mkdir "$lock" 2>/dev/null; then
+  owner=$(cat "$lock/pid" 2>/dev/null || :)
+  case "$owner" in ''|*[!0-9]*) ckb01_oem_error 'ADB management lock is busy or incomplete'; return 75;; esac
+  if kill -0 "$owner" 2>/dev/null; then ckb01_oem_error "ADB management busy (PID $owner)"; return 75; fi
+  rm -f "$lock/pid"
+  rmdir "$lock" 2>/dev/null && mkdir "$lock" 2>/dev/null || return 75
+ fi
+ printf '%s\n' "$$" >"$lock/pid"
+ trap unlock EXIT
+ trap 'exit 130' INT
+ trap 'exit 143' HUP TERM
+}
+connect_adb() {
+ "$CKB01_TIMEOUT" -k 2 12 adb connect "$target" || return $?
+ state=$("$CKB01_TIMEOUT" -k 2 8 adb -s "$target" get-state 2>/dev/null) || return $?
+ [ "$state" = device ] || { ckb01_oem_error "ADB transport state is $state"; return 69; }
+}
+enable_adb() {
+ take_lock || return $?
+ ckb01-oem network || return $?
+ # Reject a misdirected endpoint before touching its service.
+ ckb01-oem exec '[ "$(id -u)" = 0 ] && [ "$(uname -m)" = armv7l ] && [ "$(cat /sys/devices/soc0/machine)" = SDXPRAIRIE ] && { umask 077; mkdir -p /tmp/ckb01-adb; chmod 700 /tmp/ckb01-adb; }' || return $?
+ # Never truncate a .so already mapped by the running temporary adbd.
+ ckb01-oem push "$controller" "$remote/control.next" || return $?
+ ckb01-oem push "$payload" "$remote/payload.next" || return $?
+ ckb01-oem exec "mv -f '$remote/control.next' '$remote/control.sh' && mv -f '$remote/payload.next' '$remote/adb-tcp-property.so'" || return $?
+ hash=$(sha256sum "$payload"); hash=${hash%% *}
+ ckb01-oem exec "/bin/sh '$remote/control.sh' start '$hash'" || return $?
+ if ! connect_adb; then
+  ckb01_oem_error 'module temporary adbd started but ADB connection failed; use ckb01-adb status or disable (no reset attempted)'
+  return 69
+ fi
+ "$CKB01_TIMEOUT" -k 2 8 adb -s "$target" shell 'id; uname -a; cat /sys/devices/soc0/machine' || return $?
+}
+
+command=${1:-status}
+[ "$#" = 0 ] || shift
+case "$command" in help|-h|--help) usage; exit 0;; esac
+ckb01_oem_guard || exit $?
+case "$command" in
+ enable) [ "$#" = 0 ] || exit 64; enable_adb ;;
+ connect) [ "$#" = 0 ] || exit 64; ckb01-oem network && connect_adb ;;
+ status)
+  ckb01-oem exec 'if [ -f /tmp/ckb01-adb/control.sh ]; then /bin/sh /tmp/ckb01-adb/control.sh status; else printf "managed_adbd=not-enabled\n"; systemctl is-active adbd.service || :; fi'
+  ;;
+ disable)
+  [ "$#" = 0 ] || exit 64
+  take_lock || exit $?
+  "$CKB01_TIMEOUT" -k 2 5 adb disconnect "$target" >/dev/null 2>&1 || :
+  ckb01-oem exec 'if [ -f /tmp/ckb01-adb/control.sh ]; then /bin/sh /tmp/ckb01-adb/control.sh stop; else printf "managed_adbd=not-enabled\n"; fi'
+  ;;
+ shell|pull|push)
+  case "$command" in pull) [ "$#" -ge 1 ] && [ "$#" -le 2 ] || exit 64;; push) [ "$#" = 2 ] || exit 64;; esac
+  "$0" enable || exit $?
+  exec adb -s "$target" "$command" "$@"
+  ;;
+ *) usage >&2; exit 64 ;;
+esac

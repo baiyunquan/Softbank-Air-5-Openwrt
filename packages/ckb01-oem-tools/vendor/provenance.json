@@ -1,0 +1,142 @@
+{
+  "source": "CKB01 OEM IPQ Linux 4.4.60, 2023-04-01 build; read-only live file capture on 2026-10-21",
+  "selection": "oatprsync + OEM musl loader + recursive DT_NEEDED closure + libconfigapi dlopen(libz.so)",
+  "archive_sha256": "231f68db4d333b59a8379743a143f206f5639d7eb2f3442287d2fdb7f74e5f86",
+  "files": {
+    "bin/oatprsync": {
+      "source": "usr/bin/oatprsync",
+      "size": 15264,
+      "sha256": "a87c2e9ffb391a7371ac15eb1596fde852b9f6efbe3a3e39be367632904f455b",
+      "needed": [
+        "libthrift-0.12.0.so",
+        "libjsoncpp.so.21",
+        "libconfigapi.so",
+        "libcrypto.so.1.1",
+        "liboatpsec.so",
+        "libservicesdk.so",
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+        "libc.so"
+      ]
+    },
+    "lib/ld-musl-aarch64.so.1": {
+      "source": "lib/ld-musl-aarch64.so.1",
+      "size": 465024,
+      "sha256": "c3135ab9addcc21e5d438837d7181b7cc7af8e168d6d81b0d19c60e1661f055c",
+      "needed": []
+    },
+    "lib/libz.so": {
+      "source": "usr/lib/libz.so",
+      "size": 72832,
+      "sha256": "9aab0750d46c299a79ddd8031905eabc19aaa89ca007378e3ae8bd758813264e",
+      "needed": [
+        "libc.so",
+        "libgcc_s.so.1"
+      ]
+    },
+    "lib/libthrift-0.12.0.so": {
+      "source": "usr/lib/libthrift-0.12.0.so",
+      "size": 668256,
+      "sha256": "2c83641e1db83d0a80eac1d4535d645b430f2b98b337ecd814b52f481c13d8ac",
+      "needed": [
+        "libssl.so.1.1",
+        "libcrypto.so.1.1",
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+        "libc.so"
+      ]
+    },
+    "lib/libjsoncpp.so.21": {
+      "source": "usr/lib/libjsoncpp.so.21",
+      "size": 218272,
+      "sha256": "7613539b4a6477dbd17cfb4dfc2f7fbdbc6522994cfb3d58ed62a3c4079206f3",
+      "needed": [
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+        "libc.so"
+      ]
+    },
+    "lib/libconfigapi.so": {
+      "source": "usr/lib/libconfigapi.so",
+      "size": 564920,
+      "sha256": "43b875beac3c42530e00c5279cab69f2bdcbdf7fbbd91c3b07ffbbfc278ea645",
+      "needed": [
+        "liboatpsec.so",
+        "libcrypto.so.1.1",
+        "libthrift-0.12.0.so",
+        "libservicesdk.so",
+        "libjsoncpp.so.21",
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+        "libc.so"
+      ]
+    },
+    "lib/libcrypto.so.1.1": {
+      "source": "usr/lib/libcrypto.so.1.1",
+      "size": 1460160,
+      "sha256": "4bfaa498b686d78e4e24a1adecbf2735276e1f02fb42d0db6641fa20e118d353",
+      "needed": [
+        "libgcc_s.so.1",
+        "libc.so"
+      ]
+    },
+    "lib/liboatpsec.so": {
+      "source": "usr/lib/liboatpsec.so",
+      "size": 24696,
+      "sha256": "f9c2ab59e15ac137f363f97571aa6f1c397b2cbf273d46d50e2bad5def5488cb",
+      "needed": [
+        "libservicesdk.so",
+        "libthrift-0.12.0.so",
+        "libjsoncpp.so.21",
+        "libcrypto.so.1.1",
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+        "libc.so"
+      ]
+    },
+    "lib/libservicesdk.so": {
+      "source": "usr/lib/libservicesdk.so",
+      "size": 209320,
+      "sha256": "3c6dedace5d6ff1a4b4f271144474f0e5d57b9af6c329c06107b06d87266f9de",
+      "needed": [
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+        "libc.so"
+      ]
+    },
+    "lib/libstdc++.so.6": {
+      "source": "usr/lib/libstdc++.so.6",
+      "size": 1276768,
+      "sha256": "7e6b483e23707d52072045200a5e8c5a10aff35af4e7971517d8dad1871c8e98",
+      "needed": [
+        "libc.so",
+        "libgcc_s.so.1"
+      ]
+    },
+    "lib/libgcc_s.so.1": {
+      "source": "lib/libgcc_s.so.1",
+      "size": 64192,
+      "sha256": "c719f6f5f49febcfe20dc6368589de6da67dc90e4657c79d99240bb120e7e816",
+      "needed": [
+        "libc.so"
+      ]
+    },
+    "lib/libc.so": {
+      "source": "lib/libc.so",
+      "size": 465024,
+      "sha256": "c3135ab9addcc21e5d438837d7181b7cc7af8e168d6d81b0d19c60e1661f055c",
+      "needed": []
+    },
+    "lib/libssl.so.1.1": {
+      "source": "usr/lib/libssl.so.1.1",
+      "size": 367248,
+      "sha256": "0a9dedd9faf65b64a928de5f1ad9c8e33f0dc5601c07d847122a8d396806899a",
+      "needed": [
+        "libcrypto.so.1.1",
+        "libgcc_s.so.1",
+        "libc.so"
+      ]
+    }
+  },
+  "unit_data": "No ART, passwords, SIM/IMEI/NV or unit configuration included"
+}

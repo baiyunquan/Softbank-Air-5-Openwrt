@@ -1,0 +1,10 @@
+{
+  "architecture": "ARMv7 hard-float, SDX55 OEM Linux (not IPQ AArch64)",
+  "source": "adb-tcp-property.c",
+  "sha256": "e7bcf83fc314f417c7be6723f6e8aca29746db9c7f726c813b58ee4ec0348a5d",
+  "size": 1756,
+  "DT_NEEDED": [],
+  "purpose": "Override only service.adb.tcp.port=5555; retain OEM default-copy behavior for all other properties",
+  "prior_hardware_evidence": "2026-10-21: original SDX55 adbd with this payload accepted TCP ADB and returned ARMv7 root shell",
+  "scope": "Prior evidence covers payload; packaged start/restore integration needs new OpenWrt hardware acceptance"
+}

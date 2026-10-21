@@ -1,0 +1,9 @@
+#!/bin/sh
+# Use the complete OEM ABI in its own directory, never OpenWrt's global libs.
+runtime=/usr/lib/ckb01-oem/runtime
+unset LD_PRELOAD LD_LIBRARY_PATH
+[ -x "$runtime/lib/ld-musl-aarch64.so.1" ] && [ -x "$runtime/bin/oatprsync" ] || {
+ echo 'The private CKB01 OEM runtime is missing; install ckb01-oem-tools.' >&2
+ exit 69
+}
+exec "$runtime/lib/ld-musl-aarch64.so.1" --library-path "$runtime/lib" "$runtime/bin/oatprsync" "$@"
