@@ -1,0 +1,29 @@
+{
+ "latest": "ppe-nss-20261021T144737Z-39619936698",
+ "releases": [
+  {
+   "tag": "ppe-nss-20261021T144737Z-39619936698",
+   "time": 1792605260,
+   "groups": [
+    "ipq60xx-1g",
+    "ipq60xx-512m",
+    "ipq807x-1g",
+    "ipq807x-256m",
+    "ipq807x-512m",
+    "xiaomi_ax3600"
+   ]
+  },
+  {
+   "tag": "ppe-nss-20261020T181319Z-39472818725",
+   "time": 1792531357,
+   "groups": [
+    "ipq60xx-1g",
+    "ipq60xx-512m",
+    "ipq807x-1g",
+    "ipq807x-256m",
+    "ipq807x-512m",
+    "xiaomi_ax3600"
+   ]
+  }
+ ]
+}
