@@ -69,7 +69,8 @@ json_object *discover_at(const char *sysfs) {
         continue;
       const char *name = strrchr(g.gl_pathv[i], '/') + 1;
       const char *key = NULL;
-      if (!t && (strstr(target, "_QMI/") || strstr(name, "qmi0")))
+      if (!t && (strstr(target, "_QMI/") ||
+                 (!strstr(target, "_QMI1/") && strstr(name, "qmi0"))))
         key = "control";
       if (t && strstr(target, "_IP_SW0/"))
         key = "management";
@@ -86,8 +87,32 @@ json_object *discover_at(const char *sysfs) {
   json_object_object_add(
       o, "ok",
       json_object_new_boolean(strlen(jstr(o, "control")) &&
-                              strlen(jstr(o, "management")) &&
-                              strlen(jstr(o, "data"))));
+                              strlen(jstr(o, "management"))));
+  json_object_object_add(o, "data_present",
+                         json_object_new_boolean(strlen(jstr(o, "data"))));
+  return o;
+}
+json_object *probe_transport(Modem *m) {
+  const guint8 services[] = {2, 11};
+  const guint16 messages[] = {0x23, 0x2f};
+  const char *names[] = {"revision", "sim"};
+  json_object *o = json_object_new_object();
+  m->timeout_s = 8;
+  bool control_ok = false;
+  for (unsigned i = 0; i < G_N_ELEMENTS(services); i++) {
+    GError *e = NULL;
+    QmiMessage *q = request(m, services[i], messages[i], &e);
+    json_object *r = q ? execute(m, q, false, &e) : NULL;
+    if (q)
+      qmi_message_unref(q);
+    if (!r)
+      r = failure(e ? e->message : "transport query unavailable");
+    g_clear_error(&e);
+    if (i == 0)
+      control_ok = good(r);
+    json_object_object_add(o, names[i], r);
+  }
+  json_object_object_add(o, "ok", json_object_new_boolean(control_ok));
   return o;
 }
 json_object *probe(Modem *m) {

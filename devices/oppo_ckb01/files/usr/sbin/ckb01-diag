@@ -23,12 +23,15 @@ capture modem-discovery ckb01-modem discover
 capture oem-management ckb01-oem status
 # Keep module ADB inspection opt-in: diagnostic collection never enables it.
 capture oem-adb-local sh -c 'command -v adb; ls -l /usr/bin/oatprsync /usr/sbin/ckb01-oem /usr/sbin/ckb01-adb; cat /usr/share/ckb01-oem/adb-payload.json'
-capture modem-probe /bin/busybox timeout 45 ckb01-modem probe
+capture modem-transport /usr/libexec/timeout-coreutils -k 2 40 ckb01-modem probe --transport-only
+capture qrtr-transport /usr/libexec/timeout-coreutils -k 2 40 ckb01-modem --device qrtr probe --transport-only
+capture modem-probe /usr/libexec/timeout-coreutils -k 2 45 ckb01-modem probe
+capture interrupts cat /proc/interrupts
 capture modem-heartbeat ubus call service list '{"name":"ckb01-heartbeat"}'
 capture ubus-acl-owners ls -ln /usr/share/acl.d
 capture cellular ubus call network.interface.cellular status
 capture cellular-counters ip -s -d link
-for evidence in /tmp/ckb01-modem*.json /tmp/ckb01-modem*.jsonl /tmp/ckb01-modem-management.txt; do
+for evidence in /tmp/ckb01-modem*.json /tmp/ckb01-modem*.jsonl /tmp/ckb01-modem*.rc /tmp/ckb01-modem*.stderr /tmp/ckb01-modem-management.txt /tmp/ckb01-modem-rpc.txt; do
  [ ! -f "$evidence" ] || cp "$evidence" "$work/"
 done
 capture usb lsusb
@@ -73,6 +76,23 @@ done
 	printf '\nMHI devices:\n'
 	ls -l /sys/bus/mhi/devices/ /sys/class/wwan/ /dev/wwan* /dev/mhi* 2>/dev/null || true
 } >"$work/phy-mhi.txt"
+{
+ # These debugfs files describe host contexts; do not touch reset/regdump.
+ for controller in /sys/kernel/debug/mhi/*; do
+  [ -d "$controller" ] || continue
+  for name in states events channels; do
+   [ ! -r "$controller/$name" ] || { echo "$controller/$name"; cat "$controller/$name"; }
+  done
+ done
+ for device in /sys/bus/pci/devices/*; do
+  [ "$(cat "$device/vendor" 2>/dev/null)" = 0x17cb ] || continue
+  [ "$(cat "$device/device" 2>/dev/null)" = 0x0306 ] || continue
+  echo "$device"
+  for name in vendor device subsystem_vendor subsystem_device enable power/control power/runtime_status; do
+   [ ! -r "$device/$name" ] || { echo "$name"; cat "$device/$name"; }
+  done
+ done
+} >"$work/mhi-host-contexts.txt" 2>&1
 art=$(ckb01_find_art_chardev)
 if [ -n "$art" ] && [ -r "$art" ]; then
 	capture art-sha256 sha256sum "$art"

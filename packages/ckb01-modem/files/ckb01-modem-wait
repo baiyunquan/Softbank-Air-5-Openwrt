@@ -1,45 +1,120 @@
 #!/bin/sh
-# Async procd service; never holds the rest of boot for channel discovery.
-
-retrain_pcie() {
- [ -e /sys/bus/pci/devices/0000:01:00.0 ] && return 0
- [ -n "$_retrain_attempted" ] && return 0
- _retrain_attempted=1
- if [ -d /sys/bus/pci/devices/0000:00:00.0 ]; then
-  echo on > /sys/bus/pci/devices/0000:00:00.0/power/control 2>/dev/null
-  sleep 1
-  echo 1 > /sys/bus/pci/rescan 2>/dev/null
- fi
+# One bounded bootstrap; enumeration is not a transport test.
+state=${CKB01_MODEM_STATE_DIR:-/tmp}
+limiter=${CKB01_MODEM_TIMEOUT:-/usr/libexec/timeout-coreutils}
+mkdir -p "$state" || exit 1
+remaining() {
+ now=$(cut -d. -f1 /proc/uptime)
+ left=$((120 - now + started))
+ [ "$left" -gt 0 ]
 }
-
-# The independent S14ckb01-heartbeat procd service owns TCP19888.
-started=$(cut -d. -f1 /proc/uptime)
-while :; do
- retrain_pcie
- discovery=$(ckb01-modem discover 2>/dev/null)
- management=$(printf '%s' "$discovery" | jsonfilter -e '@.management')
- if [ -n "$management" ]; then
-  ip link set dev "$management" up
-  ip addr replace 169.254.10.1/24 dev "$management"
+budget() {
+ remaining || return 1
+ # Leave two seconds for timeout's process-group cleanup before the deadline.
+ [ "$left" -gt 2 ] || return 1
+ seconds=$1
+ [ "$seconds" -le "$((left - 2))" ] || seconds=$((left - 2))
+}
+passed() { [ "$(cat "$state/ckb01-modem-$1.rc" 2>/dev/null)" = 0 ]; }
+query() {
+ role=$1; shift
+ rc=0
+ "$@" >"$state/ckb01-modem-$role.json" 2>"$state/ckb01-modem-$role.stderr" || rc=$?
+ if [ "$rc" -eq 0 ]; then
+  [ "$(jsonfilter -i "$state/ckb01-modem-$role.json" -e '@.ok' 2>/dev/null)" = true ] || rc=1
  fi
- ready=$(printf '%s' "$discovery" | jsonfilter -e '@.ok')
- if [ "$ready" = true ]; then
-  printf '%s\n' "$discovery" > /tmp/ckb01-modem-discovery.json
-  if ! ping -c 2 -W 2 -I "$management" 169.254.10.2 > /tmp/ckb01-modem-management.txt 2>&1; then
-   logger -t ckb01-modem 'IP_SW0 exists but module management does not respond; skip automatic QMI probes/dialing, retain wired/Wi-Fi, no MHI reset'
-   exit 1
+ printf '%s\n' "$rc" >"$state/ckb01-modem-$role.rc"
+}
+management_probe() {
+ management=$1; rc=0
+ ip link set dev "$management" up &&
+ ip addr replace 169.254.10.1/24 dev "$management" || rc=1
+ # Record both ICMP and RPC; neither suppresses the QMI/QRTR jobs.
+ ping -c 2 -W 2 -I "$management" 169.254.10.2 \
+  >"$state/ckb01-modem-management.txt" 2>&1 || rc=1
+ CKB01_OEM_TIMEOUT=5 ckb01-oem exec 'uname -r' \
+  >"$state/ckb01-modem-rpc.txt" 2>&1 || rc=1
+ [ -s "$state/ckb01-modem-rpc.txt" ] || rc=1
+ printf '%s\n' "$rc" >"$state/ckb01-modem-management.rc"
+}
+# The complete worker, including ndo_open and all RPC descendants, runs under
+# one GNU timeout process group. No unbounded ip command lives in the supervisor.
+if [ "${1:-}" = --worker ]; then
+ shift
+ started=${CKB01_MODEM_STARTED:?}
+ case "$1" in
+  management) shift; management_probe "$@";;
+  query) shift; query "$@";;
+  *) exit 2;;
+ esac
+ exit 0
+fi
+
+lock="$state/ckb01-modem-wait.lock"
+mkdir "$lock" 2>/dev/null || exit 0
+children=
+cleanup() {
+ for child in $children; do
+  kill -TERM -- "-$child" 2>/dev/null || kill -TERM "$child" 2>/dev/null || :
+ done
+ for child in $children; do kill -KILL -- "-$child" 2>/dev/null || :; done
+ # Do not wait indefinitely for an uninterruptible kernel channel operation.
+ rmdir "$lock" 2>/dev/null || :
+}
+trap cleanup EXIT
+trap 'exit 143' TERM INT HUP
+start_job() {
+ job_role=$1; maximum=$2; shift 2
+ budget "$maximum" || return 1
+ CKB01_MODEM_STARTED=$started "$limiter" --verbose -k 1 "$seconds" "$0" --worker "$@" \
+  >"$state/ckb01-modem-$job_role.worker.out" 2>>"$state/ckb01-modem-$job_role.stderr" &
+ children="$children $!"
+}
+wait_jobs() {
+ while :; do
+  active=0
+  for child in $children; do kill -0 "$child" 2>/dev/null && active=1; done
+  [ "$active" -eq 1 ] || break
+  remaining || return 1
+  sleep 1
+ done
+ for child in $children; do wait "$child" || :; done
+ children=
+}
+for role in management qmi qrtr; do rm -f "$state/ckb01-modem-$role.rc"; done
+rm -f "$state/ckb01-modem-ready.json"
+started=$(cut -d. -f1 /proc/uptime)
+while remaining; do
+ discovery=$(ckb01-modem discover 2>/dev/null) || :
+ printf '%s\n' "$discovery" >"$state/ckb01-modem-discovery.json"
+ management=$(printf '%s' "$discovery" | jsonfilter -e '@.management' 2>/dev/null)
+ control=$(printf '%s' "$discovery" | jsonfilter -e '@.control' 2>/dev/null)
+ pci=$(printf '%s' "$discovery" | jsonfilter -e '@.pci' 2>/dev/null)
+ if [ -n "$management" ] && ! passed management; then
+  start_job management 120 management "$management" || :
+ fi
+ if [ -n "$control" ] && ! passed qmi; then
+  # Discovery selects channel14, independent of the WWAN index.
+  start_job qmi 45 query qmi ckb01-modem probe --transport-only || :
+ fi
+ if { [ -n "$pci" ] || [ -n "$control" ]; } && ! passed qrtr; then
+  start_job qrtr 45 query qrtr ckb01-modem --device qrtr probe --transport-only || :
+ fi
+ wait_jobs || break
+ if remaining && passed management && passed qmi && passed qrtr &&
+    [ "$(printf '%s' "$discovery" | jsonfilter -e '@.data_present' 2>/dev/null)" = true ]; then
+  printf '%s\n' '{"ok":true,"management":true,"qmi":true,"qrtr":true,"endpoint_type":3,"endpoint":4}' \
+   >"$state/ckb01-modem-ready.json.tmp"
+  mv "$state/ckb01-modem-ready.json.tmp" "$state/ckb01-modem-ready.json"
+  if [ ! -e "$state/ckb01-modem-cellular.started" ]; then
+   ifup cellular || exit 1
+   : >"$state/ckb01-modem-cellular.started"
   fi
-  if ! /bin/busybox timeout 45 ckb01-modem probe > /tmp/ckb01-modem-baseline.json 2>&1; then
-   logger -t ckb01-modem 'Baseline probe failed/timed out; enumerated interfaces do not prove working QMI or management transport'
-  fi
-  logger -t ckb01-modem 'MHI interfaces enumerated; inspect baseline for actual control responses; no automatic PDC changes'
-  ifup cellular
+  logger -t ckb01-modem 'Management RPC, channel14 and QRTR passed; enabling IP_HW0 through netifd'
   exit 0
  fi
- now=$(cut -d. -f1 /proc/uptime)
- [ "$((now - started))" -lt 120 ] || break
- sleep 2
+ remaining || break
+ sleep 1
 done
-printf '%s\n' "$discovery" > /tmp/ckb01-modem-discovery.json
-logger -t ckb01-modem 'Timed out waiting 120s for MHI interfaces; wired LAN retained; no MHI reset'
+logger -t ckb01-modem '120s bootstrap deadline: transport evidence retained, IP_HW0 not started; no reset attempted'
 exit 1

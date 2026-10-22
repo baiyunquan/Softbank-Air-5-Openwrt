@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 include $(TOPDIR)/rules.mk
 PKG_NAME:=ckb01-modem
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 PKG_LICENSE:=GPL-2.0-only
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 PKG_BUILD_DEPENDS:=libqmi libqrtr-glib libjson-c
@@ -11,7 +11,7 @@ define Package/ckb01-modem
   SECTION:=net
   CATEGORY:=Network
   TITLE:=OPPO CKB01 SDX55 QMI/QRTR bring-up
-  DEPENDS:=+libqmi +libqrtr-glib +libjson-c +qmi-utils +kmod-rmnet +ip-full +jsonfilter +uhttpd
+  DEPENDS:=+libqmi +libqrtr-glib +libjson-c +qmi-utils +kmod-rmnet +ip-full +jsonfilter +uhttpd +coreutils-timeout
 endef
 
 define Build/Prepare
@@ -39,6 +39,7 @@ define Package/ckb01-modem/install
 	$(LN) ../init.d/ckb01-heartbeat $(1)/etc/rc.d/S14ckb01-heartbeat
 	$(INSTALL_BIN) ./files/ckb01-modem-wait $(1)/usr/sbin/
 	$(LN) ../init.d/ckb01-modem $(1)/etc/rc.d/S96ckb01-modem
+	$(CP) ./files/endpoint-evidence.json $(1)/usr/share/ckb01-modem/
 	$(CP) ./files/mbn-sha256.json $(1)/usr/share/ckb01-modem/
 endef
 $(eval $(call BuildPackage,ckb01-modem))

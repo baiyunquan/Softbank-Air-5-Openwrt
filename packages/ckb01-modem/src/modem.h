@@ -20,6 +20,7 @@ typedef struct {
   GCancellable *cancel;
   guint cancel_poll;
   bool shutting_down;
+  guint timeout_s;
 } Modem;
 extern volatile sig_atomic_t modem_stopping;
 void modem_signals(void);
@@ -44,8 +45,11 @@ json_object *execute(Modem *, QmiMessage *, bool, GError **);
 json_object *discover(void);
 json_object *discover_at(const char *);
 json_object *probe(Modem *);
+json_object *probe_transport(Modem *);
 int radio(Modem *, const char *);
 bool restore_nas(Modem *, json_object *);
 int profile(Modem *, const char *, const char *);
 int session(Modem *, const char *, const char *, const char *, guint32);
 #endif
+
+bool confirm_data_format(Modem *, guint32);

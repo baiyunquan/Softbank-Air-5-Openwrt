@@ -16,10 +16,19 @@ proto_ckb01_qmi_setup() {
  local interface="$1" apn endpoint metric
  json_get_vars apn endpoint metric
  [ -n "$apn" ] || apn=3gnet
- case "$endpoint" in ''|*[!0-9]*)
+ local gate="${CKB01_MODEM_STATE_DIR:-/tmp}/ckb01-modem-ready.json" key
+ for key in ok management qmi qrtr; do
+  if [ "$(jsonfilter -i "$gate" -e "@.$key" 2>/dev/null)" != true ]; then
+   proto_notify_error "$interface" TRANSPORT_NOT_READY
+   return 1
+  fi
+ done
+ # OEM MHI_UCI_EP_LOOKUP plus WDA GET, recorded 2026-10-20.
+ [ -n "$endpoint" ] || endpoint=4
+ case "$endpoint" in 4) :;; *)
   proto_notify_error "$interface" ENDPOINT_NOT_CONFIRMED
   proto_block_restart "$interface"
-  logger -t ckb01-modem 'Set network.cellular.endpoint only after OEM endpoint mapping has been recorded'
+  logger -t ckb01-modem 'CKB01 measured endpoint is PCIe type=3/interface=4; refusing a different endpoint'
   return 1;;
  esac
  proto_run_command "$interface" /usr/sbin/ckb01-session "$interface" "$apn" "$endpoint"

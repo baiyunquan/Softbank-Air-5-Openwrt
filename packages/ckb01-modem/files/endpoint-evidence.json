@@ -1,0 +1,15 @@
+{
+  "board": "oppo,ckb01",
+  "pci": "17cb:0306/17cb:010c",
+  "oem_ipq_kernel": "4.4.60",
+  "date_local": "2026-10-20",
+  "method": "SDX55 MHI_UCI_EP_LOOKUP read-only ioctl 0x80106d02 on /dev/mhi_pipe_14, while host QMI14 is open; independent QMUX WDA GET on host QMI14",
+  "lookup": {"return_code": 0, "endpoint_type": 3, "interface": 4, "ipa_consumer": 1, "ipa_producer": 14},
+  "qmux_wda_get_format_endpoint_4": "014c00801a010201002100400002040000000000100100001104000200000012040000000000130400000000001404000000000015040000000000160400000000001a0400000000001b010000",
+  "format": {"link_layer": 2, "meaning": "raw-IP", "qos_header": 0, "uplink_aggregation": 0, "downlink_aggregation": 0},
+  "qrtr_wda_note": "Direct MPSS QRTR WDA GET with external PCIe endpoints 0,1,2,3,4,5,6,8,100 returns protocol error48 InvalidArgument. This must not be mistaken for the result of QTI's external QMI14 control path.",
+  "raw_evidence": "uart-20261020-130111.raw",
+  "host_qmux_tool_sha256": "a2134b054bb19f2365c3b5a2379be2b4a0c17d182ff99b32be34997274d925bc",
+  "module_ioctl_tool_sha256": "f532716bb6e745e7902f04cee48445de02f9dcb067d90abea0909b81806ece1c",
+  "writes": "No PDC selection/activation, NV/baseband/flash writes or explicit MHI reset. OEM host driver prints its own data-channel close/reset messages when QMI char fd is closed."
+}

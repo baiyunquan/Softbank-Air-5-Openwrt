@@ -92,11 +92,20 @@ class ModemFixtures(unittest.TestCase):
         cls.tmp=tempfile.TemporaryDirectory(prefix='ckb01-fixture-')
         cls.exe=Path(cls.tmp.name)/'harness'
         flags=subprocess.check_output(['pkg-config','--cflags','--libs','qmi-glib','qrtr-glib','json-c'],text=True).split()
-        subprocess.run(['cc','-std=c11','-D_GNU_SOURCE','-Wall','-Wextra','-Werror','-I'+str(SRC),str(ROOT/'scripts/tests/fixtures/ckb01_modem_harness.c'),*[str(p) for p in SRC.glob('*.c') if p.name!='main.c'],'-o',str(cls.exe),*flags],check=True)
+        subprocess.run(['cc','-std=c11','-D_GNU_SOURCE','-Wall','-Wextra','-Werror','-I'+str(SRC),str(ROOT/'scripts/tests/fixtures/ckb01_modem_harness.c'),*[str(p) for p in SRC.glob('*.c') if p.name!='main.c'],'-Wl,--wrap=request','-Wl,--wrap=execute','-o',str(cls.exe),*flags],check=True)
     @classmethod
     def tearDownClass(cls):cls.tmp.cleanup()
     def test_pdc_wrong_token_cid_and_message_rejected(self):
         subprocess.run([str(self.exe),'pdc'],check=True)
+    def test_transport_accepts_revision_even_when_sim_is_locked(self):
+        r=subprocess.run([str(self.exe),'transport'],text=True,capture_output=True)
+        self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        d=json.loads(r.stdout);self.assertTrue(d['ok']);self.assertTrue(d['revision']['ok'])
+        self.assertFalse(d['sim']['ok']);self.assertEqual(d['revision']['raw_hex'],'revision-response')
+    def test_data_format_only_accepts_oem_raw_ip_endpoint(self):
+        for mode in ['raw','qmap','wrong_endpoint']:
+            r=subprocess.run([str(self.exe),'format',mode],text=True,capture_output=True)
+            self.assertEqual(r.returncode,0,r.stdout+r.stderr)
     def fixture(self,root,board='oppo,ckb01',subsystem='0x010c',data=True):
         base=root/'firmware/devicetree/base';base.mkdir(parents=True)
         (base/'compatible').write_bytes(board.encode()+b'\0qcom,ipq8074\0')
@@ -116,11 +125,12 @@ class ModemFixtures(unittest.TestCase):
     def test_wrong_subsystem_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);self.fixture(root,subsystem='0x010b');self.assertFalse(self.discover(root)['ok'])
-    def test_delayed_data_channel_is_not_ready_then_recovers(self):
+    def test_software_ready_before_delayed_data_channel(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);self.fixture(root,data=False);self.assertFalse(self.discover(root)['ok'])
+            root=Path(tmp);self.fixture(root,data=False);d=self.discover(root)
+            self.assertTrue(d['ok']);self.assertFalse(d['data_present'])
             p=root/'bus/pci/devices/0000:01:00.0/mhi0_IP_HW0/mhi_hwip8';p.mkdir(parents=True);(root/'class/net/mhi_hwip8').symlink_to(p)
-            self.assertTrue(self.discover(root)['ok']);self.assertTrue(self.discover(root)['ok'])
+            self.assertTrue(self.discover(root)['ok']);self.assertTrue(self.discover(root)['data_present'])
     def test_wwan_qmi0_without_channel_prefix_matches_control(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
@@ -190,7 +200,7 @@ class RecoveryTools(unittest.TestCase):
     def test_transport_can_cancel_and_bounds_cleanup(self):
         t=(SRC/'transport.c').read_text()
         self.assertIn('g_cancellable_cancel',t)
-        self.assertIn('m->shutting_down ? 2 : 60',t)
+        self.assertIn('m->shutting_down ? 2 : (m->timeout_s',t)
         self.assertIn('30000000', (SRC/'main.c').read_text())
     def test_restore_checks_original_manual_plmn(self):
         t=(SRC/'radio.c').read_text()

@@ -41,6 +41,7 @@ static void indication(QmiDevice *d, QmiMessage *msg, gpointer data) {
 }
 bool modem_open(Modem *m, const char *path, GError **e) {
   memset(m, 0, sizeof(*m));
+  m->timeout_s = 60;
   m->loop = g_main_loop_new(NULL, false);
   g_queue_init(&m->indications);
   m->token = g_random_int();
@@ -100,7 +101,9 @@ bool modem_open(Modem *m, const char *path, GError **e) {
 QmiClient *modem_client(Modem *m, guint8 svc, GError **e) {
   if (m->clients[svc])
     return m->clients[svc];
-  qmi_device_allocate_client(m->dev, svc, QMI_CID_NONE, 30, m->cancel, done, m);
+  qmi_device_allocate_client(m->dev, svc, QMI_CID_NONE,
+                             MIN(30U, m->timeout_s ? m->timeout_s : 60U),
+                             m->cancel, done, m);
   GAsyncResult *r = wait_result(m);
   m->clients[svc] = qmi_device_allocate_client_finish(m->dev, r, e);
   g_object_unref(r);
@@ -182,7 +185,8 @@ json_object *execute(Modem *m, QmiMessage *q, bool pdc, GError **e) {
     add32(q, 0x10, token);
   if (m->shutting_down)
     g_cancellable_reset(m->cancel);
-  qmi_device_command_full(m->dev, q, NULL, m->shutting_down ? 2 : 60, m->cancel,
+  qmi_device_command_full(m->dev, q, NULL,
+                          m->shutting_down ? 2 : (m->timeout_s ? m->timeout_s : 60), m->cancel,
                           done, m);
   GAsyncResult *ar = wait_result(m);
   QmiMessage *r = qmi_device_command_full_finish(m->dev, ar, e);

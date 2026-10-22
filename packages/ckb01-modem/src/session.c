@@ -107,13 +107,11 @@ static json_object *settings(Modem *m) {
   json_object_object_add(r, "mtu", json_object_new_int64(value(r, "29")));
   return r;
 }
-static bool bind_wds(Modem *m, guint32 ep, bool qmap, unsigned family) {
+static bool bind_wds(Modem *m, guint32 ep, unsigned family) {
   QmiMessage *q = request(m, 1, 0xa2, NULL);
   if (!q)
     return false;
   endpoint(q, 0x10, ep);
-  if (qmap)
-    add8(q, 0x11, 1);
   add32(q, 0x13, 1);
   json_object *r = run(m, q);
   bool ok = good(r);
@@ -156,68 +154,42 @@ static bool connected(Modem *m) {
   json_object_put(r);
   return ok;
 }
+bool confirm_data_format(Modem *m, guint32 ep) {
+  /* Measured on this module's OEM QMI14 path, not a PCI-ID inference. */
+  if (ep != 4) {
+    fprintf(stderr, "CKB01 requires measured PCIe endpoint type=3/interface=4\n");
+    return false;
+  }
+  QmiMessage *q = request(m, 26, 0x21, NULL);
+  if (!q)
+    return false;
+  endpoint(q, 0x10, ep);
+  json_object *r = run(m, q);
+  fprintf(stderr, "WDA GET PCIe endpoint 4: %s\n", json_object_to_json_string(r));
+  const char *keys[] = {"qos_header", "link_layer", "uplink_aggregation", "downlink_aggregation"};
+  const int expected[] = {0, 2, 0, 0};
+  bool ok = good(r);
+  for (unsigned i=0; i<G_N_ELEMENTS(keys); i++) {
+    json_object *v = NULL;
+    if (!json_object_object_get_ex(r, keys[i], &v) || json_object_get_int(v) != expected[i])
+      ok = false;
+  }
+  json_object_put(r);
+  if (!ok)
+    fprintf(stderr, "OEM raw-IP/no-aggregation format not confirmed; data stays DOWN\n");
+  return ok;
+}
 int session(Modem *m, const char *apn, const char *iface, const char *device,
             guint32 ep) {
-
   json_object *d = discover();
   char *data = g_strdup(jstr(d, "data"));
   json_object_put(d);
-  if (!*data) {
+  if (!*data || !confirm_data_format(m, ep)) {
     g_free(data);
     return 1;
   }
-  /* Endpoint is supplied from the recorded OEM endpoint investigation, never
-   * inferred from a network interface name or the shared PCI device ID. */
-  QmiMessage *q = request(m, 26, 0x21, NULL);
-  if (!q) {
-    g_free(data);
-    return 1;
-  }
-  endpoint(q, 0x10, ep);
-  json_object *r = run(m, q);
-  if (!good(r)) {
-    fprintf(stderr, "endpoint WDA query failed: %s\n",
-            json_object_to_json_string(r));
-    json_object_put(r);
-    g_free(data);
-    return 1;
-  }
-  json_object_put(r);
-  bool qmap = false, format = false;
-  for (unsigned attempt = 0; attempt < 2; attempt++) {
-    q = request(m, 26, 0x20, NULL);
-    if (!q)
-      break;
-    add8(q, 0x10, 0);
-    add32(q, 0x11, 2);
-    add32(q, 0x12, attempt ? 5 : 0);
-    add32(q, 0x13, attempt ? 5 : 0);
-    endpoint(q, 0x17, ep);
-    r = run(m, q);
-    bool accepted = good(r);
-    json_object_put(r);
-    if (!accepted)
-      continue;
-    q = request(m, 26, 0x21, NULL);
-    if (!q)
-      break;
-    endpoint(q, 0x10, ep);
-    r = run(m, q);
-    format = good(r) && jint(r, "qos_header") == 0 &&
-             jint(r, "link_layer") == 2 &&
-             jint(r, "uplink_aggregation") == (attempt ? 5 : 0) &&
-             jint(r, "downlink_aggregation") == (attempt ? 5 : 0);
-    json_object_put(r);
-    if (format) {
-      qmap = attempt;
-      break;
-    }
-  }
-  if (!format) {
-    fprintf(stderr, "raw-IP/plain QMAP format was not confirmed\n");
-    g_free(data);
-    return 1;
-  }
+  QmiMessage *q;
+  json_object *r;
   bool ok = false;
   const char *up[] = {"ip", "link", "set", "dev", data, "up", NULL};
   spawn_ip(up, &ok);
@@ -226,19 +198,6 @@ int session(Modem *m, const char *apn, const char *iface, const char *device,
     return 1;
   }
   const char *net = data;
-  if (qmap) {
-    const char *args[] = {
-        "ip",           "link", "add",   "link",   data, "name",
-        "ckb01-rmnet1", "type", "rmnet", "mux_id", "1",  NULL};
-    spawn_ip(args, &ok);
-    if (!ok) {
-      g_free(data);
-      return 1;
-    }
-    net = "ckb01-rmnet1";
-    const char *u[] = {"ip", "link", "set", "dev", net, "up", NULL};
-    spawn_ip(u, &ok);
-  }
   q = request(m, 3, 0x33, NULL);
   if (!q)
     goto cleanup;
@@ -250,7 +209,7 @@ int session(Modem *m, const char *apn, const char *iface, const char *device,
   json_object_put(r);
   if (!ok)
     goto cleanup;
-  if (!bind_wds(m, ep, qmap, 4))
+  if (!bind_wds(m, ep, 4))
     goto cleanup;
   Modem v6;
   GError *error = NULL;
@@ -271,7 +230,7 @@ int session(Modem *m, const char *apn, const char *iface, const char *device,
     modem_close(&v6);
     goto cleanup;
   }
-  if (bind_wds(&v6, ep, qmap, 6)) {
+  if (bind_wds(&v6, ep, 6)) {
     r = start(&v6, apn, 6);
     h6 = good(r) ? value(r, "01") : 0;
     fprintf(stderr, "IPv6 start: %s\n",
@@ -326,10 +285,9 @@ int session(Modem *m, const char *apn, const char *iface, const char *device,
   end(&v6, h6);
   modem_close(&v6);
 cleanup:
-  if (qmap) {
-    const char *args[] = {"ip", "link", "del", "dev", "ckb01-rmnet1", NULL};
-    spawn_ip(args, &ok);
-  }
+  /* ndo_stop pairs with deferred prepare, also on WDS/NAS failures. */
+  const char *down[] = {"ip", "link", "set", "dev", data, "down", NULL};
+  spawn_ip(down, &ok);
   g_free(data);
   return modem_stopping ? 0 : 1;
 }

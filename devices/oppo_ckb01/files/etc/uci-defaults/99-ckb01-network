@@ -58,6 +58,7 @@ set network.wan6.metric='20'
 set network.cellular=interface
 set network.cellular.proto='ckb01_qmi'
 set network.cellular.apn='3gnet'
+set network.cellular.endpoint='4'
 set network.cellular.metric='10'
 set network.cellular.auto='0'
 set network.wan.macaddr='$wan_mac'

@@ -9,7 +9,7 @@
 static void usage(void) {
   fprintf(stderr,
           "ckb01-modem [--device /dev/wwan...qmi0|qrtr] "
-          "status|probe|discover|radio n78|radio auto|profile cu|profile "
+          "status|probe [--transport-only]|discover|radio n78|radio auto|profile cu|profile "
           "restore|connect APN NETIF "
           "ENDPOINT\nckb01-modem decode SERVICE BODY_HEX\nCKB01_BACKUP_DIR "
           "must refer to a USB directory for profile operations.\n");
@@ -42,6 +42,8 @@ int main(int argc, char **argv) {
     return 2;
   }
   const char *cmd = argv[i++];
+  bool transport_only = !strcmp(cmd, "probe") && i < argc &&
+                        !strcmp(argv[i], "--transport-only");
   bool prof = !strcmp(cmd, "profile"), conn = !strcmp(cmd, "connect"),
        rf = !strcmp(cmd, "radio");
   if ((prof &&
@@ -50,7 +52,9 @@ int main(int argc, char **argv) {
        (i >= argc || (strcmp(argv[i], "n78") && strcmp(argv[i], "auto")))) ||
       (!prof && !conn && !rf && strcmp(cmd, "probe") && strcmp(cmd, "status") &&
        strcmp(cmd, "discover")) ||
-      (conn && argc - i != 3)) {
+      (conn && argc - i != 3) ||
+      ((!strcmp(cmd, "probe") || !strcmp(cmd, "status") ||
+        !strcmp(cmd, "discover")) && argc - i != (transport_only ? 1 : 0))) {
     usage();
     return 2;
   }
@@ -115,7 +119,9 @@ int main(int argc, char **argv) {
     else
       rc = session(&m, argv[i], argv[i + 1], device, ep);
   } else {
-    json_object *o = probe(&m);
+    json_object *o = transport_only ? probe_transport(&m) : probe(&m);
+    if (transport_only && !good(o))
+      rc = 1;
     json_object *data =
         json_object_from_file("/tmp/ckb01-cellular-session.json");
     if (data)
