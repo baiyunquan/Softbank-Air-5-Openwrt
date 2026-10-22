@@ -7,10 +7,10 @@
 - 固定 OpenWrt：`a0d3cabc052f9c3c19a0abe2b2633195f703bccc`。
 - 板型 `oppo,ckb01` + PCI `17cb:0306/17cb:010c` 才选择 `ckb01-sdx55`。
 - DIAG 4/5、QMI 14/15、QMI1 16/17、IPCR 20/21、IP_SW0 46/47、IP_HW0 100/101。
-- 主线六事件环，软件64元素，HW UL512 / DL1024，32位DMA，控制超时60秒；不从主机下载基带/SBL，不主动进入EDL。
+- 原厂291的14槽事件布局，普通RX由主线core消费，继续使用mhi_net；软件64元素，HW UL512 / DL1024，32位DMA，控制超时60秒。固定no-M3，禁止CKB01自动恢复/复位；不从主机下载基带/SBL，不主动进入EDL。配置、来源及验收边界见 [CKB01_MHI_MAINLINE.md](CKB01_MHI_MAINLINE.md)。
 - 按PCI父设备和通道发现接口，120秒异步等待。IP_SW0管理地址169.254.10.1/24；模块169.254.10.2。
 - LAN1有线WAN(metric20)，LAN2及Wi-Fi为LAN192.168.5.1。蜂窝metric10、APN3gnet、无认证。
-- `network.cellular.auto=0` 避免通道未发现时抢先拨号；启动助手就绪后显式ifup。endpoint确认前不会设置WDA或尝试拨号。
+- `network.cellular.auto=0` 避免抢先拨号；管理ping/RPC、QMI14 DMS和QRTR DMS独立探查，三路通过后显式ifup。IP_HW0此前保持DOWN且未prepare。
 
 ## 查询及数据
 
@@ -18,21 +18,22 @@
 ckb01-modem discover
 ckb01-modem status
 ckb01-modem probe > /tmp/baseline.json
+ckb01-modem probe --transport-only
 # QRTR动态发现节点，供交叉验证或原厂调试环境使用：
 ckb01-modem --device qrtr probe
 ```
 
 控制默认通道14/15，经qmi-proxy协调；WDS由netifd前台子进程持有，诊断使用独立客户端，写操作使用互斥锁。原始响应、libqmi解码和具体错误保存在`/tmp/ckb01-modem.jsonl`；不支持某条消息不代表整个模块故障。`ckb01-diag`一起收集。
 
-**必须先取得本机IP_HW0 endpoint/interface证据**。不能因为PCI ID相同而套用Quectel编号。确认后配置：
+本机已用原厂MHI_UCI_EP_LOOKUP和QMI14 WDA GET交叉确认 **PCIe endpoint type=3/interface=4**，原始响应记录随包安装到`/usr/share/ckb01-modem/endpoint-evidence.json`。默认配置：
 
 ```
-uci set network.cellular.endpoint='<实测PCIe interface编号>'
+uci set network.cellular.endpoint='4'
 uci commit network
 ifup cellular
 ```
 
-`ckb01_qmi`协议先执行带endpoint的WDA GET，再设置raw-IP/关闭聚合并读回。raw-IP不被接受时尝试普通QMAP，mux1及内核rmnet；只接受读回一致的数据格式。IPv4/IPv6使用独立WDS客户端，客户端及数据handle由同一进程持有，退出时Stop Network并释放CID。IPv6失败只在明确的IP族不支持/3GPP IPv4-only响应时允许IPv4回退。其他错误保留日志并退避重试，不触发MHI reset。
+`ckb01_qmi`先检查三路通过记录；会话程序经QMI14执行带endpoint的WDA GET，只接受raw-IP、无QoS头、双向无聚合。不尝试其他格式，读回不符时数据接口保持DOWN。IPv4/IPv6使用独立WDS客户端，客户端及数据handle由同一进程持有，退出时Stop Network并释放CID、关闭IP_HW0。IPv6失败只在明确的IP族不支持/3GPP IPv4-only响应时允许IPv4回退。其他错误保留日志并退避重试，不触发MHI reset。启动助手不自动切换MBN、不尝试SIM解锁、不修改NV。
 
 ## CU切换和恢复
 

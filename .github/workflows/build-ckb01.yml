@@ -11,6 +11,7 @@ on:
       - 'patches/tree/ckb01/**'
       - 'packages/**'
       - 'docs/CKB01_SDX55_PORTING.md'
+      - 'docs/CKB01_MHI_MAINLINE.md'
       - 'docs/CKB01_OEM_MANAGEMENT.md'
       - 'scripts/ckb01-fit.py'
       - 'scripts/ckb01-usb-image.py'
@@ -272,6 +273,8 @@ jobs:
           cp builder/docs/CKB01_USB_BRINGUP.md artifacts/README.md
           cp builder/docs/CKB01_WIFI_PORTING.md artifacts/
           cp builder/docs/CKB01_SDX55_PORTING.md artifacts/
+          cp builder/docs/CKB01_MHI_MAINLINE.md artifacts/
+          cp builder/packages/ckb01-modem/files/endpoint-evidence.json artifacts/
           cp builder/docs/CKB01_OEM_MANAGEMENT.md artifacts/
           cp builder/devices/oppo_ckb01/firmware/provenance.json artifacts/bdf-provenance.json
           cp builder/packages/ckb01-oem-tools/vendor/provenance.json artifacts/oem-runtime-provenance.json
@@ -325,6 +328,8 @@ jobs:
             echo '- LAN1: DHCP WAN; LAN2: management at 192.168.5.1'
             echo '- APs: Air5-2G / Air5-5G; key Air5-OpenWrt; calibration read from unit ART'
             echo '- SDX55 management: ckb01-oem exec/pull/push; ckb01-adb enable/shell/disable (on demand, no automatic EDL/reboot)'
+            echo '- SDX55: OEM 14-slot MHI, mainline core RX, no-M3, first fault retained without automatic recovery; management/QMI14/QRTR gate before data.'
+            echo '- New-firmware transport/data/reliability acceptance pending; this build has not been flashed by the workflow.'
             echo '- FIT includes RAM recovery; complete dual-partition IMG uses persistent AIR5ROOT when available. Hardware validation pending.'
             if [[ -f artifacts/fit-report.json ]]; then
               cat artifacts/fit-report.json

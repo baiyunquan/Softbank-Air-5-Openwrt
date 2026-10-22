@@ -60,7 +60,7 @@ class Ckb01FitTests(unittest.TestCase):
 
     def make_fit(self, *, board="oppo,ckb01", missing_module=False,
                  oversized=False, swapped_phy=False, wireless=False, bad_bdf=False, missing_segment=False,
-                 compressed_initramfs=False, modem=False):
+                 compressed_initramfs=False, modem=False, stale_bootstrap=False):
         paths = [name for name in REQUIRED if not (missing_module and name.endswith("mhi_wwan_ctrl.ko"))]
         contents = {}
         if wireless:
@@ -77,11 +77,19 @@ class Ckb01FitTests(unittest.TestCase):
                            "etc/init.d/ckb01-heartbeat", "etc/rc.d/S14ckb01-heartbeat",
                            "usr/sbin/uhttpd", "usr/share/ckb01-modem/heartbeat/index.html",
                            "etc/uci-defaults/98-ckb01-heartbeat",
-                           "usr/share/ckb01-modem/mbn-sha256.json"]
+                           "usr/share/ckb01-modem/mbn-sha256.json",
+                           "usr/share/ckb01-modem/endpoint-evidence.json"]
             modem_paths += [f"usr/lib/{lib}.so.1" for lib in ("libqmi-glib", "libqrtr-glib", "libjson-c", "libglib-2.0", "libgio-2.0", "libgobject-2.0")]
             modem_paths += [f"lib/modules/6.18/{module}.ko" for module in ("mhi_net", "qrtr-mhi", "qrtr", "rmnet")]
             paths += modem_paths
             contents.update({name: b"test modem payload" for name in modem_paths})
+            modem_files = PACKAGER.parents[1] / 'packages/ckb01-modem/files'
+            for installed, source in [('usr/sbin/ckb01-modem-wait','ckb01-modem-wait'),
+                                      ('lib/netifd/proto/ckb01_qmi.sh','ckb01_qmi.sh'),
+                                      ('usr/share/ckb01-modem/endpoint-evidence.json','endpoint-evidence.json')]:
+                contents[installed] = (modem_files/source).read_bytes()
+            if stale_bootstrap:
+                contents['usr/sbin/ckb01-modem-wait'] = b'#!/bin/sh\nifup cellular\n'
             # Keep the existing modem fixture aligned with the actual installed
             # OEM paths and immutable vendor hashes; no guessed global libraries.
             oem = PACKAGER.parents[1] / "packages/ckb01-oem-tools"
@@ -181,10 +189,11 @@ class Ckb01FitTests(unittest.TestCase):
         subprocess.run(["mkimage", "-f", str(self.work / "image.its"), str(self.source)],
                        cwd=self.work, check=True, capture_output=True)
 
-    def package(self, wireless=False):
+    def package(self, wireless=False, modem=False):
         return subprocess.run([sys.executable, str(PACKAGER), str(self.source),
                                "--initramfs", str(self.initramfs), "--output", str(self.work / "out"),
-                               *(["--wireless"] if wireless else [])],
+                               *(["--wireless"] if wireless else []),
+                               *(["--modem"] if modem else [])],
                               text=True, capture_output=True)
 
     def test_valid_image_has_identical_usb_alias_and_boot_configurations(self):
@@ -297,6 +306,12 @@ class Ckb01FitTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((workspace / "artifacts/fit-report.json").exists(), result.stdout)
         self.assertFalse((workspace / "artifacts/UNVALIDATED-FIT.txt").exists())
+
+    def test_modem_image_reports_stale_bootstrap(self):
+        self.make_fit(modem=True, stale_bootstrap=True)
+        result = self.package(modem=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('ckb01-modem-wait',result.stderr)
 
     def test_actual_workflow_preserves_fit_when_embedded_archive_validation_fails(self):
         result, workspace = self.workflow_package(misplaced=True)

@@ -131,8 +131,15 @@ def verify_initramfs(path, kernel, wireless=False, modem=False):
                      "etc/init.d/ckb01-heartbeat", "etc/rc.d/S14ckb01-heartbeat",
                      "usr/sbin/uhttpd", "usr/share/ckb01-modem/heartbeat/index.html",
                      "etc/uci-defaults/98-ckb01-heartbeat",
-                     "usr/share/ckb01-modem/mbn-sha256.json"):
+                     "usr/share/ckb01-modem/mbn-sha256.json",
+                     "usr/share/ckb01-modem/endpoint-evidence.json"):
             require(bool(entries.get(name)), f"modem initramfs is missing {name}")
+        modem_files = Path(__file__).resolve().parents[1] / "packages/ckb01-modem/files"
+        for installed, source in (("usr/sbin/ckb01-modem-wait", "ckb01-modem-wait"),
+                                  ("lib/netifd/proto/ckb01_qmi.sh", "ckb01_qmi.sh"),
+                                  ("usr/share/ckb01-modem/endpoint-evidence.json", "endpoint-evidence.json")):
+            require(entries[installed] == (modem_files / source).read_bytes(),
+                    f"modem initramfs has stale or changed {installed}")
         for lib in ("libqmi-glib.so", "libqrtr-glib.so", "libjson-c.so", "libglib-2.0.so", "libgio-2.0.so", "libgobject-2.0.so"):
             require(any(Path(name).name.startswith(lib) for name in paths),
                     f"modem initramfs is missing {lib}")
