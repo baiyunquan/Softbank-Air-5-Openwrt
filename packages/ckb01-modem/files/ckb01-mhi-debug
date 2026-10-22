@@ -101,7 +101,15 @@ control=$(jsonfilter -i "$out/discovery.txt" -e '@.control' 2>/dev/null)
 capture management-address ip -4 addr show dev "$management"
 grep -q '169.254.10.1/24' "$out/management-address.txt" || fail 'management address missing; no automatic reconfiguration'
 capture kernel-log-before dmesg
-dmesg -w >"$out/kernel-stream.txt" 2>&1 &
+# OpenWrt BusyBox may omit dmesg -w. Preserve full dmesg snapshots in
+# either case, and use logd's follow mode when the kernel utility lacks it.
+if dmesg --help 2>&1 | grep -q -- '-w'; then
+ say 'stage=kernel_stream source=dmesg'
+ dmesg -w >"$out/kernel-stream.txt" 2>&1 &
+else
+ say 'stage=kernel_stream source=logread'
+ logread -f >"$out/kernel-stream.txt" 2>&1 &
+fi
 logpid=$!
 
 probe_one() {

@@ -81,6 +81,17 @@ class KernelDiagnostics(unittest.TestCase):
 
 
 class Collector(unittest.TestCase):
+    def test_busybox_without_dmesg_follow_uses_logread(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);env,_=self.fixture(root)
+            result=subprocess.run(['sh',str(TOOL),'compare',str(root/'out')],env=env,
+                                  text=True,capture_output=True,timeout=20)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            calls=[json.loads(line) for line in (root/'calls').read_text().splitlines()]
+            self.assertNotIn(['dmesg','-w'],calls)
+            self.assertIn(['logread','-f'],calls)
+            self.assertIn('stage=kernel_stream source=logread',result.stdout)
+
     def test_exit_terminates_probe_process_groups(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);env,_=self.fixture(root)
@@ -150,10 +161,10 @@ elif name=='ip':print('inet 169.254.10.1/24 dev mhi_swip0')
 elif name=='ping':
  print('received='+str(int(poll)))
  sys.exit(0 if poll else 1)
-elif name=='dmesg':print('CKB01-MHI stage=fixture')
+elif name in ['dmesg','logread']:print('CKB01-MHI stage=fixture')
 ''')
         program.chmod(0o755)
-        for name in ['ckb01-modem','jsonfilter','ip','ping','dmesg']:
+        for name in ['ckb01-modem','jsonfilter','ip','ping','dmesg','logread']:
             (binpath/name).symlink_to(program)
         env=dict(os.environ,FIXTURE=str(root),PATH=str(binpath)+':'+os.environ['PATH'],
                  CKB01_MHI_SYS_ROOT=str(root/'sys'),CKB01_MHI_PROC_ROOT=str(proc),
