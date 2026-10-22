@@ -72,7 +72,7 @@ class Ckb01FitTests(unittest.TestCase):
         if modem:
             modem_paths = ["usr/sbin/ckb01-modem", "usr/bin/qmicli", "usr/libexec/qmi-proxy",
                            "lib/netifd/proto/ckb01_qmi.sh", "lib/netifd/ckb01-update",
-                           "usr/sbin/ckb01-session", "usr/sbin/ckb01-modem-wait",
+                           "usr/sbin/ckb01-session", "usr/sbin/ckb01-modem-wait", "usr/sbin/ckb01-mhi-debug",
                            "etc/init.d/ckb01-modem", "etc/rc.d/S96ckb01-modem",
                            "etc/init.d/ckb01-heartbeat", "etc/rc.d/S14ckb01-heartbeat",
                            "usr/sbin/uhttpd", "usr/share/ckb01-modem/heartbeat/index.html",
@@ -85,6 +85,7 @@ class Ckb01FitTests(unittest.TestCase):
             contents.update({name: b"test modem payload" for name in modem_paths})
             modem_files = PACKAGER.parents[1] / 'packages/ckb01-modem/files'
             for installed, source in [('usr/sbin/ckb01-modem-wait','ckb01-modem-wait'),
+                                      ('usr/sbin/ckb01-mhi-debug','ckb01-mhi-debug'),
                                       ('lib/netifd/proto/ckb01_qmi.sh','ckb01_qmi.sh'),
                                       ('usr/share/ckb01-modem/endpoint-evidence.json','endpoint-evidence.json')]:
                 contents[installed] = (modem_files/source).read_bytes()

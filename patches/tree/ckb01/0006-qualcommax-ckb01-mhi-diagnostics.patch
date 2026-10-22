@@ -1,0 +1,1102 @@
+--- /dev/null
++++ b/target/linux/qualcommax/patches-6.18/951-ckb01-mhi-diagnostics.patch
+@@ -0,0 +1,1099 @@
++--- a/drivers/bus/mhi/host/Makefile
+++++ b/drivers/bus/mhi/host/Makefile
++@@ -1,5 +1,6 @@
++ obj-$(CONFIG_MHI_BUS) += mhi.o
++ mhi-y := init.o main.o pm.o boot.o
+++mhi-$(CONFIG_PCI_MSI) += ckb01_diag.o
++ mhi-$(CONFIG_MHI_BUS_DEBUG) += debugfs.o
++ 
++ obj-$(CONFIG_MHI_BUS_PCI_GENERIC) += mhi_pci_generic.o
++--- /dev/null
+++++ b/drivers/bus/mhi/host/ckb01_diag.c
++@@ -0,0 +1,381 @@
+++// SPDX-License-Identifier: GPL-2.0
+++/* CKB01-only observation and a bounded, explicitly requested event consumer. */
+++#include <linux/debugfs.h>
+++#include <linux/irq.h>
+++#include <linux/irqdomain.h>
+++#include <linux/ktime.h>
+++#include <linux/mhi.h>
+++#include <linux/module.h>
+++#include <linux/msi.h>
+++#include <linux/of.h>
+++#include <linux/pci.h>
+++#include <linux/seq_file.h>
+++#include <linux/slab.h>
+++#include <linux/uaccess.h>
+++#include <linux/unaligned.h>
+++#include "internal.h"
+++
+++#define CKB01_POLL_MS 20
+++#define CKB01_WINDOW_MS 30000
+++#define CKB01_POLL_BUDGET 64
+++#define CKB01_TOTAL_BUDGET 4096
+++#define CKB01_RINGS 14
+++#define CKB01_LOG_BUDGET 256
+++
+++struct mhi_diag {
+++	struct mhi_controller *cntrl;
+++	struct delayed_work work;
+++	struct mutex control;
+++	atomic64_t count[CKB01_RINGS + 1][MHI_DIAG_MAX];
+++	u32 id;
+++	u32 consumed;
+++	u32 rounds;
+++	atomic_t printed;
+++	atomic_t samples[MHI_DIAG_MAX];
+++	unsigned long deadline;
+++	bool enabled;
+++	bool polling;
+++	bool dead;
+++};
+++
+++static const char * const stage_name[MHI_DIAG_MAX] = {
+++	"irq", "irq_empty", "schedule", "task", "event", "complete",
+++	"queue", "channel_db", "event_db", "net_tx", "net_rx", "refill",
+++	"qmi_tx", "qmi_rx", "channel_state", "poll", "error",
+++};
+++
+++void mhi_diag_trace(struct mhi_controller *cntrl, enum mhi_diag_stage stage,
+++		    int er, int ch, u64 a, u64 b, int rc)
+++{
+++	struct mhi_diag *diag = READ_ONCE(cntrl->diag);
+++	unsigned int slot = er >= 0 && er < CKB01_RINGS ? er : CKB01_RINGS;
+++	bool software = false;
+++
+++	if (!diag || stage >= MHI_DIAG_MAX)
+++		return;
+++	atomic64_inc(&diag->count[slot][stage]);
+++	if (stage == MHI_DIAG_ERROR) {
+++		dev_err_ratelimited(cntrl->cntrl_dev,
+++			"CKB01-MHI ts_ns=%llu id=%u stage=error er=%d ch=%d a=%#llx b=%#llx rc=%d\n",
+++			ktime_get_ns(), READ_ONCE(diag->id), er, ch, a, b, rc);
+++		return;
+++	}
+++	if (!READ_ONCE(diag->enabled) ||
+++	    atomic_inc_return(&diag->samples[stage]) > 16 ||
+++	    atomic_inc_return(&diag->printed) > CKB01_LOG_BUDGET)
+++		return;
+++	if (er >= 0 && er < cntrl->total_ev_rings &&
+++	    stage != MHI_DIAG_IRQ && stage != MHI_DIAG_SCHEDULE)
+++		software = READ_ONCE(cntrl->mhi_event[er].diag_polling);
+++	dev_info(cntrl->cntrl_dev,
+++		 "CKB01-MHI ts_ns=%llu id=%u stage=%s src=%s er=%d ch=%d a=%#llx b=%#llx rc=%d\n",
+++		 ktime_get_ns(), READ_ONCE(diag->id), stage_name[stage],
+++		 software ? "poll" : "normal", er, ch, a, b, rc);
+++}
+++EXPORT_SYMBOL_GPL(mhi_diag_trace);
+++
+++/* May be called from a fault tasklet/timer: no waiting or BAR access. */
+++void mhi_diag_abort(struct mhi_controller *cntrl)
+++{
+++	struct mhi_diag *diag = READ_ONCE(cntrl->diag);
+++
+++	if (!diag)
+++		return;
+++	WRITE_ONCE(diag->dead, true);
+++	WRITE_ONCE(diag->enabled, false);
+++	WRITE_ONCE(diag->polling, false);
+++}
+++EXPORT_SYMBOL_GPL(mhi_diag_abort);
+++
+++void mhi_diag_stop(struct mhi_controller *cntrl)
+++{
+++	struct mhi_diag *diag = cntrl->diag;
+++
+++	if (!diag)
+++		return;
+++	mutex_lock(&diag->control);
+++	WRITE_ONCE(diag->enabled, false);
+++	WRITE_ONCE(diag->polling, false);
+++	cancel_delayed_work_sync(&diag->work);
+++	mutex_unlock(&diag->control);
+++}
+++
+++static void mhi_diag_work(struct work_struct *work)
+++{
+++	static const u32 rings[] = { 1, 2, 4, 5 };
+++	struct mhi_diag *diag = container_of(to_delayed_work(work), struct mhi_diag, work);
+++	struct mhi_controller *cntrl = diag->cntrl;
+++	u32 i;
+++	int ret = 0;
+++	u16 vendor;
+++
+++	if (!READ_ONCE(diag->enabled))
+++		return;
+++	if (time_after_eq(jiffies, diag->deadline) || diag->consumed >= CKB01_TOTAL_BUDGET)
+++		goto done;
+++	if (!READ_ONCE(diag->polling))
+++		goto next;
+++
+++	/* Serialize with disable transitions. Cancel this work before freeing contexts. */
+++	if (!mutex_trylock(&cntrl->pm_mutex))
+++		goto next;
+++	if (READ_ONCE(diag->dead) || !mhi_is_active(cntrl) || !cntrl->mhi_ctxt ||
+++	    cntrl->pm_state != MHI_PM_M0 || cntrl->ee != MHI_EE_AMSS) {
+++		ret = -ENODEV;
+++		goto unlock;
+++	}
+++	if (pci_read_config_word(to_pci_dev(cntrl->cntrl_dev), PCI_VENDOR_ID, &vendor) ||
+++	    vendor != 0x17cb) {
+++		mhi_diag_abort(cntrl);
+++		ret = -ENODEV;
+++		goto unlock;
+++	}
+++	for (i = 0; i < ARRAY_SIZE(rings); i++) {
+++		struct mhi_event *ev = &cntrl->mhi_event[rings[i]];
+++		void *before;
+++		u32 consumed;
+++		u32 raw_budget = min_t(u32, CKB01_POLL_BUDGET,
+++				       CKB01_TOTAL_BUDGET - diag->consumed);
+++
+++		if (!raw_budget || !READ_ONCE(diag->enabled))
+++			break;
+++		if (ev->offload_ev || ev->cl_manage || ev->data_type != MHI_ER_DATA) {
+++			ret = -EINVAL;
+++			break;
+++		}
+++		spin_lock_bh(&ev->lock);
+++		before = ev->ring.rp;
+++		ev->diag_polling = true;
+++		ret = mhi_process_data_event_ring_budget(cntrl, ev, raw_budget, raw_budget);
+++		ev->diag_polling = false;
+++		consumed = (ev->ring.rp - before + ev->ring.len) % ev->ring.len;
+++		consumed /= sizeof(struct mhi_ring_element);
+++		spin_unlock_bh(&ev->lock);
+++		diag->consumed += consumed;
+++		mhi_diag_trace(cntrl, MHI_DIAG_POLL, rings[i], -1,
+++			       consumed, diag->consumed, ret < 0 ? ret : 0);
+++		if (ret < 0)
+++			break;
+++	}
+++unlock:
+++	mutex_unlock(&cntrl->pm_mutex);
+++	if (ret < 0) {
+++		mhi_diag_trace(cntrl, MHI_DIAG_ERROR, -1, -1, diag->consumed, 0, ret);
+++		goto done;
+++	}
+++next:
+++	diag->rounds++;
+++	if (READ_ONCE(diag->enabled))
+++		schedule_delayed_work(&diag->work, msecs_to_jiffies(CKB01_POLL_MS));
+++	return;
+++done:
+++	WRITE_ONCE(diag->enabled, false);
+++	WRITE_ONCE(diag->polling, false);
+++	dev_info(cntrl->cntrl_dev,
+++		 "CKB01-MHI ts_ns=%llu id=%u stage=window_end consumed=%u rounds=%u rc=%d\n",
+++		 ktime_get_ns(), diag->id, diag->consumed, diag->rounds, ret);
+++}
+++
+++static void mhi_diag_irq_map(struct seq_file *m, struct mhi_controller *cntrl)
+++{
+++	struct pci_dev *pdev = to_pci_dev(cntrl->cntrl_dev);
+++	u16 vendor = 0xffff, flags = 0;
+++	u32 lo = 0, hi = 0, data = 0, mask = 0, pending = 0;
+++	int cap, i, depth;
+++	bool alive = !pci_read_config_word(pdev, PCI_VENDOR_ID, &vendor) && vendor == 0x17cb;
+++
+++	cap = pdev->msi_cap;
+++	if (alive && cap) {
+++		pci_read_config_word(pdev, cap + PCI_MSI_FLAGS, &flags);
+++		pci_read_config_dword(pdev, cap + PCI_MSI_ADDRESS_LO, &lo);
+++		if (flags & PCI_MSI_FLAGS_64BIT)
+++			pci_read_config_dword(pdev, cap + PCI_MSI_ADDRESS_HI, &hi);
+++		pci_read_config_dword(pdev, cap + ((flags & PCI_MSI_FLAGS_64BIT) ?
+++				      PCI_MSI_DATA_64 : PCI_MSI_DATA_32), &data);
+++		if (flags & PCI_MSI_FLAGS_MASKBIT) {
+++			int off = (flags & PCI_MSI_FLAGS_64BIT) ? PCI_MSI_MASK_64 : PCI_MSI_MASK_32;
+++			pci_read_config_dword(pdev, cap + off, &mask);
+++			pci_read_config_dword(pdev, cap + off + 4, &pending);
+++		}
+++	}
+++	seq_printf(m, "pci=%s alive=%u msi_flags=%#x address=0x%08x%08x data_base=%#x mask=%#x pending=%#x nr_irqs=%u\n",
+++		   pci_name(pdev), alive, flags, hi, lo, data & 0xffff, mask, pending, cntrl->nr_irqs);
+++	for (i = 0; i < cntrl->nr_irqs; i++) {
+++		struct irq_data *irqd = irq_get_irq_data(cntrl->irq[i]);
+++		struct msi_msg msg = { };
+++
+++		if (irq_get_msi_desc(cntrl->irq[i]))
+++			get_cached_msi_msg(cntrl->irq[i], &msg);
+++		seq_printf(m, "vector=%d linux_irq=%d expected_data=%#x cached_base=%#x cached_addr=0x%08x%08x",
+++			   i, cntrl->irq[i], (data & 0xffff) + i, msg.data, msg.address_hi, msg.address_lo);
+++		for (depth = 0; irqd; irqd = irqd->parent_data, depth++)
+++			seq_printf(m, " domain%d=%s hwirq%d=%lu chip%d=%s disabled%d=%u masked%d=%u",
+++				   depth, irqd->domain ? irqd->domain->name : "none", depth,
+++				   irqd->hwirq, depth, irqd->chip ? irqd->chip->name : "none",
+++				   depth, irqd_irq_disabled(irqd), depth, irqd_irq_masked(irqd));
+++		seq_putc(m, '\n');
+++	}
+++}
+++
+++static int mhi_diag_show(struct seq_file *m, void *unused)
+++{
+++	struct mhi_controller *cntrl = m->private;
+++	struct mhi_diag *diag = cntrl->diag;
+++	int i, s;
+++
+++	mutex_lock(&cntrl->pm_mutex);
+++	seq_printf(m, "CKB01-MHI ts_ns=%llu id=%u enabled=%u polling=%u dead=%u consumed=%u rounds=%u pm=%#x ee=%u pending_pkts=%d\n",
+++		   ktime_get_ns(), READ_ONCE(diag->id), READ_ONCE(diag->enabled),
+++		   READ_ONCE(diag->polling), READ_ONCE(diag->dead), diag->consumed,
+++		   diag->rounds, cntrl->pm_state, cntrl->ee, atomic_read(&cntrl->pending_pkts));
+++	mhi_diag_irq_map(m, cntrl);
+++	if (!mhi_is_active(cntrl) || !cntrl->mhi_ctxt)
+++		goto counts;
+++	for (i = 0; i < cntrl->total_ev_rings; i++) {
+++		struct mhi_event *ev = &cntrl->mhi_event[i];
+++		struct mhi_ring *ring = &ev->ring;
+++		struct mhi_event_ctxt ctx;
+++		u64 host_rp, host_wp, device_rp, raw[4][2];
+++		u32 records = 0, j;
+++		void *p;
+++
+++		if (ev->offload_ev) {
+++			seq_printf(m, "er=%d offload=1\n", i);
+++			continue;
+++		}
+++		spin_lock_bh(&ev->lock);
+++		memcpy(&ctx, &cntrl->mhi_ctxt->er_ctxt[i], sizeof(ctx));
+++		host_rp = ring->iommu_base + (ring->rp - ring->base);
+++		host_wp = ring->iommu_base + (ring->wp - ring->base);
+++		device_rp = le64_to_cpu(ctx.rp);
+++		dma_rmb();
+++		p = ring->rp;
+++		/* Snapshot pending records only, never arbitrary memory or lost-link BARs. */
+++		if (i != 0 && ring->base && device_rp >= ring->iommu_base && device_rp < ring->iommu_base + ring->len &&
+++		    IS_ALIGNED(device_rp, sizeof(struct mhi_ring_element))) {
+++			while (records < ARRAY_SIZE(raw) &&
+++			       ring->iommu_base + (p - ring->base) != device_rp) {
+++				raw[records][0] = get_unaligned_le64(p);
+++				raw[records++][1] = get_unaligned_le64(p + 8);
+++				p += sizeof(struct mhi_ring_element);
+++				if (p >= ring->base + ring->len)
+++					p = ring->base;
+++			}
+++		}
+++		spin_unlock_bh(&ev->lock);
+++		seq_printf(m, "er=%d msivec=%u linux_irq=%d intmod=%#x rbase=%#llx rlen=%#llx device_rp=%#llx host_rp=%#llx host_wp=%#llx ctxt_wp=%#llx\n",
+++			   i, le32_to_cpu(ctx.msivec), cntrl->irq[ev->irq], le32_to_cpu(ctx.intmod),
+++			   le64_to_cpu(ctx.rbase), le64_to_cpu(ctx.rlen), device_rp, host_rp,
+++			   host_wp, le64_to_cpu(ctx.wp));
+++		for (j = 0; j < records; j++)
+++			seq_printf(m, "er=%d pending_record=%u ptr=%#llx dword0=%#x dword1=%#x\n",
+++				   i, j, raw[j][0], (u32)raw[j][1], (u32)(raw[j][1] >> 32));
+++	}
+++counts:
+++	for (i = 0; i <= CKB01_RINGS; i++) {
+++		seq_printf(m, "er=%d", i == CKB01_RINGS ? -1 : i);
+++		for (s = 0; s < MHI_DIAG_MAX; s++)
+++			seq_printf(m, " %s=%lld", stage_name[s], atomic64_read(&diag->count[i][s]));
+++		seq_putc(m, '\n');
+++	}
+++	mutex_unlock(&cntrl->pm_mutex);
+++	return 0;
+++}
+++DEFINE_SHOW_ATTRIBUTE(mhi_diag);
+++
+++static ssize_t mhi_diag_control(struct file *file, const char __user *buf,
+++			      size_t count, loff_t *offset)
+++{
+++	struct mhi_controller *cntrl = file->private_data;
+++	struct mhi_diag *diag = cntrl->diag;
+++	char command[16];
+++	int ret = 0;
+++	int i;
+++	bool poll;
+++
+++	if (!count || count >= sizeof(command))
+++		return -EINVAL;
+++	if (copy_from_user(command, buf, count))
+++		return -EFAULT;
+++	command[count] = '\0';
+++	strim(command);
+++	if (!strcmp(command, "stop")) {
+++		mhi_diag_stop(cntrl);
+++		dev_info(cntrl->cntrl_dev, "CKB01-MHI ts_ns=%llu id=%u stage=stop consumed=%u\n",
+++			 ktime_get_ns(), diag->id, diag->consumed);
+++		return count;
+++	}
+++	if (strcmp(command, "start") && strcmp(command, "trace"))
+++		return -EINVAL;
+++	poll = !strcmp(command, "start");
+++	mutex_lock(&diag->control);
+++	if (READ_ONCE(diag->polling)) {
+++		ret = -EBUSY;
+++		goto out;
+++	}
+++	WRITE_ONCE(diag->enabled, false);
+++	cancel_delayed_work_sync(&diag->work);
+++	mutex_lock(&cntrl->pm_mutex);
+++	if (READ_ONCE(diag->dead) || !mhi_is_active(cntrl) || !cntrl->mhi_ctxt ||
+++	    cntrl->pm_state != MHI_PM_M0 || cntrl->ee != MHI_EE_AMSS) {
+++		ret = -ENODEV;
+++	} else {
+++		diag->id++;
+++		diag->consumed = 0;
+++		diag->rounds = 0;
+++		atomic_set(&diag->printed, 0);
+++		for (i = 0; i < MHI_DIAG_MAX; i++)
+++			atomic_set(&diag->samples[i], 0);
+++		diag->deadline = jiffies + msecs_to_jiffies(CKB01_WINDOW_MS);
+++		WRITE_ONCE(diag->polling, poll);
+++		WRITE_ONCE(diag->enabled, true);
+++		schedule_delayed_work(&diag->work, 0);
+++		dev_info(cntrl->cntrl_dev,
+++			 "CKB01-MHI ts_ns=%llu id=%u stage=window_start poll=%u window_ms=%u interval_ms=%u budget=%u total_budget=%u\n",
+++			 ktime_get_ns(), diag->id, poll, CKB01_WINDOW_MS, CKB01_POLL_MS,
+++			 CKB01_POLL_BUDGET, CKB01_TOTAL_BUDGET);
+++	}
+++	mutex_unlock(&cntrl->pm_mutex);
+++out:
+++	mutex_unlock(&diag->control);
+++	return ret ? ret : count;
+++}
+++
+++static const struct file_operations mhi_diag_control_fops = {
+++	.owner = THIS_MODULE,
+++	.open = simple_open,
+++	.write = mhi_diag_control,
+++	.llseek = noop_llseek,
+++};
+++
+++void mhi_diag_init(struct mhi_controller *cntrl)
+++{
+++	struct pci_dev *pdev;
+++	struct mhi_diag *diag;
+++
+++	if (!dev_is_pci(cntrl->cntrl_dev) || !of_machine_is_compatible("oppo,ckb01"))
+++		return;
+++	pdev = to_pci_dev(cntrl->cntrl_dev);
+++	if (pdev->vendor != 0x17cb || pdev->device != 0x0306 ||
+++	    pdev->subsystem_vendor != 0x17cb || pdev->subsystem_device != 0x010c)
+++		return;
+++	diag = kzalloc(sizeof(*diag), GFP_KERNEL);
+++	if (!diag) {
+++		dev_warn(cntrl->cntrl_dev, "CKB01-MHI diagnostic allocation failed\n");
+++		return;
+++	}
+++	diag->cntrl = cntrl;
+++	mutex_init(&diag->control);
+++	INIT_DELAYED_WORK(&diag->work, mhi_diag_work);
+++	cntrl->diag = diag;
+++	debugfs_create_file("ckb01_diag", 0400, cntrl->debugfs_dentry, cntrl, &mhi_diag_fops);
+++	debugfs_create_file("ckb01_poll", 0200, cntrl->debugfs_dentry, cntrl, &mhi_diag_control_fops);
+++	dev_info(cntrl->cntrl_dev, "CKB01-MHI diagnostics ready; polling=off\n");
+++}
+++
+++void mhi_diag_destroy(struct mhi_controller *cntrl)
+++{
+++	mhi_diag_stop(cntrl);
+++	kfree(cntrl->diag);
+++	cntrl->diag = NULL;
+++}
++--- a/drivers/bus/mhi/host/debugfs.c
+++++ b/drivers/bus/mhi/host/debugfs.c
++@@ -381,6 +381,8 @@
++ 			debugfs_create_dir(dev_name(&mhi_cntrl->mhi_dev->dev),
++ 					   mhi_debugfs_root);
++ 
+++	mhi_diag_init(mhi_cntrl);
+++
++ 	debugfs_create_file("states", 0444, mhi_cntrl->debugfs_dentry,
++ 			    mhi_cntrl, &debugfs_states_fops);
++ 	debugfs_create_file("events", 0444, mhi_cntrl->debugfs_dentry,
++--- a/drivers/bus/mhi/host/init.c
+++++ b/drivers/bus/mhi/host/init.c
++@@ -1079,6 +1079,7 @@
++ 
++ 	mhi_deinit_free_irq(mhi_cntrl);
++ 	mhi_destroy_debugfs(mhi_cntrl);
+++	mhi_diag_destroy(mhi_cntrl);
++ 
++ 	if (mhi_cntrl->edl_trigger)
++ 		sysfs_remove_file(&mhi_dev->dev.kobj, &dev_attr_trigger_edl.attr);
++@@ -1203,6 +1204,7 @@
++ 
++ void mhi_unprepare_after_power_down(struct mhi_controller *mhi_cntrl)
++ {
+++	mhi_diag_stop(mhi_cntrl);
++ 	if (mhi_cntrl->fbc_image) {
++ 		mhi_free_bhie_table(mhi_cntrl, mhi_cntrl->fbc_image);
++ 		mhi_cntrl->fbc_image = NULL;
++--- a/drivers/bus/mhi/host/internal.h
+++++ b/drivers/bus/mhi/host/internal.h
++@@ -256,6 +256,7 @@
++ 			     u32 event_quota);
++ 	bool hw_ring;
++ 	bool cl_manage;
+++	bool diag_polling; /* protected by event lock */
++ 	bool offload_ev; /* managed by a device driver */
++ };
++ 
++@@ -293,6 +294,18 @@
++ /* Default MHI timeout */
++ #define MHI_TIMEOUT_MS (1000)
++ 
+++#if IS_ENABLED(CONFIG_PCI_MSI)
+++void mhi_diag_init(struct mhi_controller *cntrl);
+++void mhi_diag_stop(struct mhi_controller *cntrl);
+++void mhi_diag_destroy(struct mhi_controller *cntrl);
+++#else
+++static inline void mhi_diag_init(struct mhi_controller *cntrl) { }
+++static inline void mhi_diag_stop(struct mhi_controller *cntrl) { }
+++static inline void mhi_diag_destroy(struct mhi_controller *cntrl) { }
+++#endif
+++int mhi_process_data_event_ring_budget(struct mhi_controller *cntrl,
+++				      struct mhi_event *ev, u32 quota, u32 raw_budget);
+++
++ /* debugfs related functions */
++ #ifdef CONFIG_MHI_BUS_DEBUG
++ void mhi_create_debugfs(struct mhi_controller *mhi_cntrl);
++--- a/drivers/bus/mhi/host/main.c
+++++ b/drivers/bus/mhi/host/main.c
++@@ -117,6 +117,8 @@
++ {
++ 	struct mhi_ring *ring = &mhi_event->ring;
++ 
+++	mhi_diag_trace(mhi_event->mhi_cntrl, MHI_DIAG_ER_DB, mhi_event->er_index,
+++		       -1, le64_to_cpu(*ring->ctxt_wp), mhi_event->db_cfg.db_mode, 0);
++ 	mhi_event->db_cfg.process_db(mhi_event->mhi_cntrl, &mhi_event->db_cfg,
++ 				     ring->db_addr, le64_to_cpu(*ring->ctxt_wp));
++ }
++@@ -146,6 +148,8 @@
++ 	dma_wmb();
++ 	*ring->ctxt_wp = cpu_to_le64(db);
++ 
+++	mhi_diag_trace(mhi_cntrl, MHI_DIAG_CH_DB, mhi_chan->er_index,
+++		       mhi_chan->chan, db, mhi_chan->db_cfg.db_mode, 0);
++ 	mhi_chan->db_cfg.process_db(mhi_cntrl, &mhi_chan->db_cfg,
++ 				    ring->db_addr, db);
++ }
++@@ -454,6 +458,8 @@
++ 	 * and by that time mhi_ctxt() would've freed. So check for the existence of mhi_ctxt
++ 	 * before handling the IRQs.
++ 	 */
+++	mhi_diag_trace(mhi_cntrl, MHI_DIAG_IRQ, mhi_event->er_index, -1,
+++		       irq_number, 0, 0);
++ 	if (!mhi_cntrl->mhi_ctxt) {
++ 		dev_dbg(&mhi_cntrl->mhi_dev->dev,
++ 			"mhi_ctxt has been freed\n");
++@@ -472,8 +478,10 @@
++ 	dev_rp = mhi_to_virtual(ev_ring, ptr);
++ 
++ 	/* Only proceed if event ring has pending events */
++-	if (ev_ring->rp == dev_rp)
+++	if (ev_ring->rp == dev_rp) {
+++		mhi_diag_trace(mhi_cntrl, MHI_DIAG_EMPTY, mhi_event->er_index, -1, ptr, 0, 0);
++ 		return IRQ_HANDLED;
+++	}
++ 
++ 	/* For client managed event ring, notify pending data */
++ 	if (mhi_event->cl_manage) {
++@@ -483,6 +491,8 @@
++ 		if (mhi_dev)
++ 			mhi_notify(mhi_dev, MHI_CB_PENDING_DATA);
++ 	} else {
+++		mhi_diag_trace(mhi_cntrl, MHI_DIAG_SCHEDULE, mhi_event->er_index,
+++			       -1, ptr, ev_ring->iommu_base + (ev_ring->rp - ev_ring->base), 0);
++ 		tasklet_schedule(&mhi_event->task);
++ 	}
++ 
++@@ -585,6 +595,7 @@
++ 	struct mhi_result result;
++ 	unsigned long flags = 0;
++ 	u32 ev_code;
+++	int ret = 0;
++ 
++ 	ev_code = MHI_TRE_GET_EV_CODE(event);
++ 	buf_ring = &mhi_chan->buf_ring;
++@@ -621,6 +632,9 @@
++ 		if (!is_valid_ring_ptr(tre_ring, ptr)) {
++ 			dev_err(&mhi_cntrl->mhi_dev->dev,
++ 				"Event element points outside of the tre ring\n");
+++			mhi_diag_trace(mhi_cntrl, MHI_DIAG_ERROR, mhi_chan->er_index,
+++				       mhi_chan->chan, ptr, tre_ring->iommu_base, -EIO);
+++			ret = -EIO;
++ 			break;
++ 		}
++ 		/* Get the TRB this event points to */
++@@ -640,6 +654,9 @@
++ 		if (dev_rp != next_rp && !MHI_TRE_DATA_GET_CHAIN(local_rp)) {
++ 			dev_err(&mhi_cntrl->mhi_dev->dev,
++ 				"Event element points to an unexpected TRE\n");
+++			mhi_diag_trace(mhi_cntrl, MHI_DIAG_ERROR, mhi_chan->er_index,
+++				       mhi_chan->chan, ptr, tre_ring->iommu_base, -EIO);
+++			ret = -EIO;
++ 			break;
++ 		}
++ 
++@@ -668,6 +685,9 @@
++ 
++ 			/* notify client */
++ 			mhi_chan->xfer_cb(mhi_chan->mhi_dev, &result);
+++			mhi_diag_trace(mhi_cntrl, MHI_DIAG_COMPLETE, mhi_chan->er_index,
+++				       mhi_chan->chan, result.bytes_xferd, ev_code,
+++				       result.transaction_status);
++ 
++ 			if (mhi_chan->dir == DMA_TO_DEVICE) {
++ 				atomic_dec(&mhi_cntrl->pending_pkts);
++@@ -722,7 +742,7 @@
++ 	else
++ 		read_unlock_bh(&mhi_chan->lock);
++ 
++-	return 0;
+++	return ret;
++ }
++ 
++ static int parse_rsc_event(struct mhi_controller *mhi_cntrl,
++@@ -998,9 +1018,9 @@
++ 	return count;
++ }
++ 
++-int mhi_process_data_event_ring(struct mhi_controller *mhi_cntrl,
++-				struct mhi_event *mhi_event,
++-				u32 event_quota)
+++int mhi_process_data_event_ring_budget(struct mhi_controller *mhi_cntrl,
+++				       struct mhi_event *mhi_event,
+++				       u32 event_quota, u32 raw_budget)
++ {
++ 	struct mhi_ring_element *dev_rp, *local_rp;
++ 	struct mhi_ring *ev_ring = &mhi_event->ring;
++@@ -1023,12 +1043,26 @@
++ 	dev_rp = mhi_to_virtual(ev_ring, ptr);
++ 	local_rp = ev_ring->rp;
++ 
++-	while (dev_rp != local_rp && event_quota > 0) {
++-		enum mhi_pkt_type type = MHI_TRE_GET_EV_TYPE(local_rp);
+++	while (dev_rp != local_rp && event_quota > 0 && raw_budget > 0) {
+++		enum mhi_pkt_type type;
+++
+++		dma_rmb();
+++		type = MHI_TRE_GET_EV_TYPE(local_rp);
+++		raw_budget--; /* Includes stale and unknown records. */
+++		mhi_diag_trace(mhi_cntrl, MHI_DIAG_EVENT, mhi_event->er_index,
+++			       MHI_TRE_GET_EV_CHID(local_rp), le64_to_cpu(local_rp->ptr),
+++			       ((u64)le32_to_cpu(local_rp->dword[0]) << 32) |
+++			       le32_to_cpu(local_rp->dword[1]), 0);
+++		if (mhi_event->diag_polling && type != MHI_PKT_TYPE_TX_EVENT &&
+++		    type != MHI_PKT_TYPE_RSC_TX_EVENT && type != MHI_PKT_TYPE_STALE_EVENT)
+++			return -EPROTO;
++ 
++ 		trace_mhi_data_event(mhi_cntrl, local_rp);
++ 
++ 		chan = MHI_TRE_GET_EV_CHID(local_rp);
+++		if (mhi_event->diag_polling && type != MHI_PKT_TYPE_STALE_EVENT &&
+++		    (chan >= mhi_cntrl->max_chan || !mhi_cntrl->mhi_chan[chan].configured))
+++			return -EPROTO;
++ 
++ 		WARN_ON(chan >= mhi_cntrl->max_chan);
++ 
++@@ -1041,9 +1075,15 @@
++ 			mhi_chan = &mhi_cntrl->mhi_chan[chan];
++ 
++ 			if (likely(type == MHI_PKT_TYPE_TX_EVENT)) {
++-				parse_xfer_event(mhi_cntrl, local_rp, mhi_chan);
+++				int ret = parse_xfer_event(mhi_cntrl, local_rp, mhi_chan);
+++				if (mhi_event->diag_polling && ret < 0)
+++					return ret;
++ 				event_quota--;
++ 			} else if (type == MHI_PKT_TYPE_RSC_TX_EVENT) {
+++				if (mhi_event->diag_polling &&
+++				    (MHI_TRE_GET_EV_COOKIE(local_rp) >= mhi_chan->buf_ring.len ||
+++				     MHI_TRE_GET_EV_COOKIE(local_rp) % sizeof(struct mhi_buf_info)))
+++					return -EPROTO;
++ 				parse_rsc_event(mhi_cntrl, local_rp, mhi_chan);
++ 				event_quota--;
++ 			}
++@@ -1072,11 +1112,18 @@
++ 	return count;
++ }
++ 
+++int mhi_process_data_event_ring(struct mhi_controller *cntrl,
+++				struct mhi_event *ev, u32 event_quota)
+++{
+++	return mhi_process_data_event_ring_budget(cntrl, ev, event_quota, U32_MAX);
+++}
+++
++ void mhi_ev_task(unsigned long data)
++ {
++ 	struct mhi_event *mhi_event = (struct mhi_event *)data;
++ 	struct mhi_controller *mhi_cntrl = mhi_event->mhi_cntrl;
++ 
+++	mhi_diag_trace(mhi_cntrl, MHI_DIAG_TASK, mhi_event->er_index, -1, 0, 0, 0);
++ 	/* process all pending events */
++ 	spin_lock_bh(&mhi_event->lock);
++ 	mhi_event->process_event(mhi_cntrl, mhi_event, U32_MAX);
++@@ -1108,6 +1155,7 @@
++ 		return;
++ 	}
++ 
+++	mhi_diag_trace(mhi_cntrl, MHI_DIAG_TASK, mhi_event->er_index, -1, 0, 0, 0);
++ 	/* Process ctrl events */
++ 	ret = mhi_event->process_event(mhi_cntrl, mhi_event, U32_MAX);
++ 
++@@ -1252,6 +1300,10 @@
++ 	mhi_tre->dword[0] = MHI_TRE_DATA_DWORD0(info->len);
++ 	mhi_tre->dword[1] = MHI_TRE_DATA_DWORD1(bei, eot, eob, chain);
++ 
+++	mhi_diag_trace(mhi_cntrl, MHI_DIAG_QUEUE, mhi_chan->er_index,
+++		       mhi_chan->chan, le64_to_cpu(mhi_tre->ptr),
+++		       ((u64)le32_to_cpu(mhi_tre->dword[0]) << 32) |
+++		       le32_to_cpu(mhi_tre->dword[1]), 0);
++ 	trace_mhi_gen_tre(mhi_cntrl, mhi_chan, mhi_tre);
++ 	/* increment WP */
++ 	mhi_add_ring_element(mhi_cntrl, tre_ring);
++--- a/drivers/bus/mhi/host/pci_generic.c
+++++ b/drivers/bus/mhi/host/pci_generic.c
++@@ -1108,11 +1108,20 @@
++ 	struct pci_dev *pdev = to_pci_dev(mhi_cntrl->cntrl_dev);
++ 	struct mhi_pci_device *mhi_pdev = pci_get_drvdata(pdev);
++ 	unsigned long flags;
+++	u32 previous_pm;
++ 	u16 vendor = 0xffff, link = 0;
++ 	int ret, i;
++ 
++ 	if (test_and_set_bit(MHI_PCI_DEV_FAULT, &mhi_pdev->status))
++ 		return;
+++	/* Gate MMIO before abort/dumps, including an already-running consumer. */
+++	write_lock_irqsave(&mhi_cntrl->pm_lock, flags);
+++	previous_pm = mhi_cntrl->pm_state;
+++	mhi_cntrl->pm_state = MHI_PM_LD_ERR_FATAL_DETECT;
+++	write_unlock_irqrestore(&mhi_cntrl->pm_lock, flags);
+++	mhi_diag_trace(mhi_cntrl, MHI_DIAG_ERROR, -1, -1, previous_pm,
+++		       MHI_PM_LD_ERR_FATAL_DETECT, -ENODEV);
+++	mhi_diag_abort(mhi_cntrl);
++ 	timer_delete(&mhi_pdev->health_check_timer);
++ 	ret = pci_read_config_word(pdev, PCI_VENDOR_ID, &vendor);
++ 	if (!ret && vendor != 0xffff && vendor != 0)
++@@ -1120,7 +1129,7 @@
++ 	dev_err(&pdev->dev,
++ 		"CKB01 first fault: %s uptime_ms=%u pci_rc=%d vendor=%04x link=%04x pm=%x ee=%u state=%u M0=%u M2=%u M3=%u; MMIO skipped, automatic reset inhibited\n",
++ 		reason, jiffies_to_msecs(jiffies), ret, vendor, link,
++-		READ_ONCE(mhi_cntrl->pm_state), READ_ONCE(mhi_cntrl->ee),
+++		previous_pm, READ_ONCE(mhi_cntrl->ee),
++ 		READ_ONCE(mhi_cntrl->dev_state), mhi_cntrl->M0,
++ 		mhi_cntrl->M2, mhi_cntrl->M3);
++ 	if (mhi_cntrl->mhi_ctxt) {
++@@ -1155,10 +1164,6 @@
++ 			}
++ 		}
++ 	}
++-	/* Gate further doorbells while retaining DMA contexts for diagnosis. */
++-	write_lock_irqsave(&mhi_cntrl->pm_lock, flags);
++-	mhi_cntrl->pm_state = MHI_PM_LD_ERR_FATAL_DETECT;
++-	write_unlock_irqrestore(&mhi_cntrl->pm_lock, flags);
++ 	wake_up_all(&mhi_cntrl->state_event);
++ }
++ 
++--- a/drivers/bus/mhi/host/pm.c
+++++ b/drivers/bus/mhi/host/pm.c
++@@ -1251,6 +1251,7 @@
++ 	enum mhi_pm_state cur_state, transition_state;
++ 	struct device *dev = &mhi_cntrl->mhi_dev->dev;
++ 
+++	mhi_diag_stop(mhi_cntrl);
++ 	mutex_lock(&mhi_cntrl->pm_mutex);
++ 	write_lock_irq(&mhi_cntrl->pm_lock);
++ 	cur_state = mhi_cntrl->pm_state;
++--- a/drivers/net/mhi_net.c
+++++ b/drivers/net/mhi_net.c
++@@ -63,6 +63,8 @@
++ 	/* Feed the rx buffer pool */
++ 	schedule_delayed_work(&mhi_netdev->rx_refill, 0);
++ 
+++	mhi_diag_trace(mhi_netdev->mdev->mhi_cntrl, MHI_DIAG_STATE, -1,
+++		       mhi_netdev->mdev->ul_chan_id, 1, mhi_netdev->rx_queue_sz, 0);
++ 	/* Carrier is established via out-of-band channel (e.g. qmi) */
++ 	netif_carrier_on(ndev);
++ 
++@@ -97,9 +99,12 @@
++ {
++ 	struct mhi_net_dev *mhi_netdev = netdev_priv(ndev);
++ 	struct mhi_device *mdev = mhi_netdev->mdev;
+++	unsigned int diag_len = skb->len;
++ 	int err;
++ 
++ 	err = mhi_queue_skb(mdev, DMA_TO_DEVICE, skb, skb->len, MHI_EOT);
+++	mhi_diag_trace(mdev->mhi_cntrl, MHI_DIAG_NET_TX, -1, mdev->ul_chan_id,
+++		       diag_len, mhi_get_free_desc_count(mdev, DMA_TO_DEVICE), err);
++ 	if (unlikely(err)) {
++ 		net_err_ratelimited("%s: Failed to queue TX buf (%d)\n",
++ 				    ndev->name, err);
++@@ -196,6 +201,9 @@
++ 	struct sk_buff *skb = mhi_res->buf_addr;
++ 	int free_desc_count;
++ 
+++	mhi_diag_trace(mhi_dev->mhi_cntrl, MHI_DIAG_NET_RX, -1,
+++		       mhi_dev->dl_chan_id, mhi_res->bytes_xferd, 0,
+++		       mhi_res->transaction_status);
++ 	free_desc_count = mhi_get_free_desc_count(mhi_dev, DMA_FROM_DEVICE);
++ 
++ 	if (unlikely(mhi_res->transaction_status)) {
++@@ -310,6 +318,8 @@
++ 			break;
++ 
++ 		err = mhi_queue_skb(mdev, DMA_FROM_DEVICE, skb, size, MHI_EOT);
+++		mhi_diag_trace(mdev->mhi_cntrl, MHI_DIAG_REFILL, -1,
+++			       mdev->dl_chan_id, size, 0, err);
++ 		if (unlikely(err)) {
++ 			net_err_ratelimited("%s: Failed to queue RX buf (%d)\n",
++ 					    ndev->name, err);
++--- a/drivers/net/wwan/mhi_wwan_ctrl.c
+++++ b/drivers/net/wwan/mhi_wwan_ctrl.c
++@@ -114,6 +114,8 @@
++ 	if (ret)
++ 		return ret;
++ 
+++	mhi_diag_trace(mhiwwan->mhi_dev->mhi_cntrl, MHI_DIAG_STATE, -1,
+++		       mhiwwan->mhi_dev->ul_chan_id, 1, 0, ret);
++ 	/* Don't allocate more buffers than MHI channel queue size */
++ 	mhiwwan->rx_budget = mhi_get_free_desc_count(mhiwwan->mhi_dev, DMA_FROM_DEVICE);
++ 
++@@ -142,6 +144,7 @@
++ static int mhi_wwan_ctrl_tx(struct wwan_port *port, struct sk_buff *skb)
++ {
++ 	struct mhi_wwan_dev *mhiwwan = wwan_port_get_drvdata(port);
+++	unsigned int diag_len = skb->len;
++ 	int ret;
++ 
++ 	if (skb->len > mhiwwan->mtu)
++@@ -153,6 +156,8 @@
++ 	/* Queue the packet for MHI transfer and check fullness of the queue */
++ 	spin_lock_bh(&mhiwwan->tx_lock);
++ 	ret = mhi_queue_skb(mhiwwan->mhi_dev, DMA_TO_DEVICE, skb, skb->len, MHI_EOT);
+++	mhi_diag_trace(mhiwwan->mhi_dev->mhi_cntrl, MHI_DIAG_QMI_TX, -1,
+++		       mhiwwan->mhi_dev->ul_chan_id, diag_len, 0, ret);
++ 	if (mhi_queue_is_full(mhiwwan->mhi_dev, DMA_TO_DEVICE))
++ 		wwan_port_txoff(port);
++ 	spin_unlock_bh(&mhiwwan->tx_lock);
++@@ -202,6 +207,9 @@
++ 		return;
++ 	}
++ 
+++	mhi_diag_trace(mhi_dev->mhi_cntrl, MHI_DIAG_QMI_RX, -1,
+++		       mhi_dev->dl_chan_id, mhi_result->bytes_xferd, 0,
+++		       mhi_result->transaction_status);
++ 	/* MHI core does not update skb->len, do it before forward */
++ 	skb_put(skb, mhi_result->bytes_xferd);
++ 	wwan_port_rx(port, skb);
++--- /dev/null
+++++ b/drivers/pci/controller/dwc/pcie-ckb01-msi.h
++@@ -0,0 +1,183 @@
+++/* SPDX-License-Identifier: GPL-2.0 */
+++/* Included only by the DesignWare host. All observation is CKB01 opt-in. */
+++#include <linux/debugfs.h>
+++#include <linux/ktime.h>
+++#include <linux/seq_file.h>
+++#include <linux/slab.h>
+++#include <linux/uaccess.h>
+++
+++struct dw_ckb01_msi {
+++	struct dw_pcie_rp *pp;
+++	struct pci_dev *endpoint;
+++	struct dentry *dir;
+++	u32 target[MAX_MSI_CTRLS];
+++	u32 last_status[MAX_MSI_CTRLS];
+++	atomic64_t parent[MAX_MSI_CTRLS];
+++	atomic64_t received[MAX_MSI_IRQS];
+++	atomic64_t failed[MAX_MSI_IRQS];
+++	atomic_t samples[MAX_MSI_IRQS];
+++	u64 deadline_ns;
+++};
+++
+++static bool dw_ckb01_target(struct dw_ckb01_msi *diag, unsigned long hw)
+++{
+++	return diag && hw < MAX_MSI_IRQS &&
+++		(READ_ONCE(diag->target[hw / 32]) & BIT(hw % 32));
+++}
+++
+++static int dw_ckb01_show(struct seq_file *m, void *unused)
+++{
+++	struct dw_ckb01_msi *diag = m->private;
+++	struct dw_pcie_rp *pp = diag->pp;
+++	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+++	struct pci_dev *ep;
+++	unsigned long flags;
+++	u16 vendor = 0xffff;
+++	int i, j;
+++	bool alive;
+++
+++	raw_spin_lock_irqsave(&pp->lock, flags);
+++	ep = pci_dev_get(diag->endpoint);
+++	raw_spin_unlock_irqrestore(&pp->lock, flags);
+++	alive = ep && !pci_read_config_word(ep, PCI_VENDOR_ID, &vendor) && vendor == 0x17cb;
+++	seq_printf(m, "CKB01-MHI ts_ns=%llu stage=dw_snapshot endpoint=%s alive=%u target=%pad num_vectors=%u\n",
+++		   ktime_get_ns(), ep ? pci_name(ep) : "unmatched", alive,
+++		   &pp->msi_data, pp->num_vectors);
+++	for (i = 0; i < pp->num_vectors / MAX_MSI_IRQS_PER_CTRL; i++) {
+++		u32 status = 0, mask = 0, enable = 0;
+++		struct irq_data *parent = irq_get_irq_data(pp->msi_irq[i]);
+++
+++		/* No BAR/DBI reads after endpoint loss. STATUS is read-only here (W1C on write). */
+++		if (alive) {
+++			status = dw_pcie_readl_dbi(pci, PCIE_MSI_INTR0_STATUS + i * MSI_REG_CTRL_BLOCK_SIZE);
+++			mask = dw_pcie_readl_dbi(pci, PCIE_MSI_INTR0_MASK + i * MSI_REG_CTRL_BLOCK_SIZE);
+++			enable = dw_pcie_readl_dbi(pci, PCIE_MSI_INTR0_ENABLE + i * MSI_REG_CTRL_BLOCK_SIZE);
+++		}
+++		seq_printf(m, "bank=%d parent_irq=%d parent_hwirq=%lu entries=%lld target_bits=%#x last_status=%#x live_valid=%u status=%#x mask=%#x enable=%#x software_mask=%#x\n",
+++			   i, pp->msi_irq[i], parent ? parent->hwirq : 0,
+++			   atomic64_read(&diag->parent[i]), READ_ONCE(diag->target[i]),
+++			   READ_ONCE(diag->last_status[i]), alive, status, mask, enable,
+++			   READ_ONCE(pp->irq_mask[i]));
+++		for (j = 0; j < 32; j++) {
+++			unsigned long hw = i * 32 + j;
+++			if (!dw_ckb01_target(diag, hw))
+++				continue;
+++			seq_printf(m, "hwirq=%lu linux_irq=%u received=%lld dispatch_failed=%lld\n",
+++				   hw, irq_find_mapping(pp->irq_domain, hw),
+++				   atomic64_read(&diag->received[hw]), atomic64_read(&diag->failed[hw]));
+++		}
+++	}
+++	pci_dev_put(ep);
+++	return 0;
+++}
+++DEFINE_SHOW_ATTRIBUTE(dw_ckb01);
+++
+++static ssize_t dw_ckb01_trace(struct file *file, const char __user *buf,
+++			    size_t count, loff_t *off)
+++{
+++	struct dw_ckb01_msi *diag = file->private_data;
+++	char command[16];
+++	int i;
+++
+++	if (!count || count >= sizeof(command))
+++		return -EINVAL;
+++	if (copy_from_user(command, buf, count))
+++		return -EFAULT;
+++	command[count] = '\0';
+++	if (!strcmp(strim(command), "stop")) {
+++		WRITE_ONCE(diag->deadline_ns, 0);
+++		return count;
+++	}
+++	if (strcmp(command, "start"))
+++		return -EINVAL;
+++	for (i = 0; i < MAX_MSI_IRQS; i++)
+++		atomic_set(&diag->samples[i], 0);
+++	WRITE_ONCE(diag->deadline_ns, ktime_get_ns() + 30ULL * NSEC_PER_SEC);
+++	return count;
+++}
+++
+++static const struct file_operations dw_ckb01_trace_fops = {
+++	.owner = THIS_MODULE, .open = simple_open, .write = dw_ckb01_trace, .llseek = noop_llseek,
+++};
+++
+++static void dw_ckb01_cleanup(void *data)
+++{
+++	struct dw_ckb01_msi *diag = data;
+++
+++	diag->pp->ckb01_msi = NULL;
+++	debugfs_remove_recursive(diag->dir);
+++	diag->dir = NULL;
+++	pci_dev_put(diag->endpoint);
+++	diag->endpoint = NULL;
+++}
+++
+++static void dw_ckb01_init(struct dw_pcie_rp *pp)
+++{
+++	static struct dentry *root;
+++	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+++	struct dw_ckb01_msi *diag;
+++
+++	if (!of_machine_is_compatible("oppo,ckb01"))
+++		return;
+++	diag = devm_kzalloc(pci->dev, sizeof(*diag), GFP_KERNEL);
+++	if (!diag)
+++		return;
+++	diag->pp = pp;
+++	if (!root)
+++		root = debugfs_create_dir("ckb01-pcie", NULL);
+++	diag->dir = debugfs_create_dir(dev_name(pci->dev), root);
+++	if (devm_add_action_or_reset(pci->dev, dw_ckb01_cleanup, diag))
+++		return;
+++	debugfs_create_file("msi", 0400, diag->dir, diag, &dw_ckb01_fops);
+++	debugfs_create_file("trace", 0200, diag->dir, diag, &dw_ckb01_trace_fops);
+++	pp->ckb01_msi = diag;
+++}
+++
+++static void dw_ckb01_message(struct irq_data *d, struct msi_msg *msg)
+++{
+++	struct dw_pcie_rp *pp = irq_data_get_irq_chip_data(d);
+++	struct dw_ckb01_msi *diag = pp->ckb01_msi;
+++	struct msi_desc *desc = irq_data_get_msi_desc(d);
+++	struct pci_dev *ep;
+++	unsigned long flags, hw;
+++	unsigned int n, base;
+++
+++	if (!diag || !desc || !dev_is_pci(msi_desc_to_dev(desc)))
+++		return;
+++	ep = to_pci_dev(msi_desc_to_dev(desc));
+++	if (ep->vendor != 0x17cb || ep->device != 0x0306 ||
+++	    ep->subsystem_vendor != 0x17cb || ep->subsystem_device != 0x010c)
+++		return;
+++	n = desc->nvec_used;
+++	if (!n || !is_power_of_2(n) || n > MAX_MSI_IRQS)
+++		return;
+++	base = d->hwirq & ~(n - 1);
+++	if (base + n > pp->num_vectors)
+++		return;
+++	raw_spin_lock_irqsave(&pp->lock, flags);
+++	if (!diag->endpoint)
+++		diag->endpoint = pci_dev_get(ep);
+++	for (hw = base; hw < base + n; hw++)
+++		diag->target[hw / 32] |= BIT(hw % 32);
+++	raw_spin_unlock_irqrestore(&pp->lock, flags);
+++	dev_info(to_dw_pcie_from_pp(pp)->dev,
+++		 "CKB01-MHI ts_ns=%llu stage=msi_compose endpoint=%s irq=%u parent_hwirq=%lu target=0x%08x%08x data=%#x base=%u vectors=%u\n",
+++		 ktime_get_ns(), pci_name(ep), d->irq, d->hwirq,
+++		 msg->address_hi, msg->address_lo, msg->data, base, n);
+++}
+++
+++static void dw_ckb01_received(struct dw_pcie_rp *pp, unsigned long hw, u32 status, int rc)
+++{
+++	struct dw_ckb01_msi *diag = pp->ckb01_msi;
+++
+++	if (!dw_ckb01_target(diag, hw))
+++		return;
+++	atomic64_inc(&diag->received[hw]);
+++	if (rc)
+++		atomic64_inc(&diag->failed[hw]);
+++	if (ktime_get_ns() < READ_ONCE(diag->deadline_ns) &&
+++	    atomic_inc_return(&diag->samples[hw]) <= 8)
+++		dev_info(to_dw_pcie_from_pp(pp)->dev,
+++			 "CKB01-MHI ts_ns=%llu stage=dw_dispatch hwirq=%lu linux_irq=%u status=%#x rc=%d\n",
+++			 ktime_get_ns(), hw, irq_find_mapping(pp->irq_domain, hw), status, rc);
+++}
++--- a/drivers/pci/controller/dwc/pcie-designware-host.c
+++++ b/drivers/pci/controller/dwc/pcie-designware-host.c
++@@ -21,6 +21,7 @@
++ 
++ #include "../../pci.h"
++ #include "pcie-designware.h"
+++#include "pcie-ckb01-msi.h"
++ 
++ static struct pci_ops dw_pcie_ops;
++ static struct pci_ops dw_pcie_ecam_ops;
++@@ -48,7 +49,7 @@
++ /* MSI int handler */
++ irqreturn_t dw_handle_msi_irq(struct dw_pcie_rp *pp)
++ {
++-	int i, pos;
+++	int i, pos, rc;
++ 	unsigned long val;
++ 	u32 status, num_ctrls;
++ 	irqreturn_t ret = IRQ_NONE;
++@@ -59,6 +60,8 @@
++ 	for (i = 0; i < num_ctrls; i++) {
++ 		status = dw_pcie_readl_dbi(pci, PCIE_MSI_INTR0_STATUS +
++ 					   (i * MSI_REG_CTRL_BLOCK_SIZE));
+++		if (pp->ckb01_msi)
+++			WRITE_ONCE(pp->ckb01_msi->last_status[i], status);
++ 		if (!status)
++ 			continue;
++ 
++@@ -67,9 +70,10 @@
++ 		pos = 0;
++ 		while ((pos = find_next_bit(&val, MAX_MSI_IRQS_PER_CTRL,
++ 					    pos)) != MAX_MSI_IRQS_PER_CTRL) {
++-			generic_handle_domain_irq(pp->irq_domain,
+++			rc = generic_handle_domain_irq(pp->irq_domain,
++ 						  (i * MAX_MSI_IRQS_PER_CTRL) +
++ 						  pos);
+++			dw_ckb01_received(pp, i * MAX_MSI_IRQS_PER_CTRL + pos, status, rc);
++ 			pos++;
++ 		}
++ 	}
++@@ -86,6 +90,12 @@
++ 	chained_irq_enter(chip, desc);
++ 
++ 	pp = irq_desc_get_handler_data(desc);
+++	if (pp->ckb01_msi) {
+++		int i;
+++		for (i = 0; i < MAX_MSI_CTRLS; i++)
+++			if (pp->msi_irq[i] == irq_desc_get_irq(desc))
+++				atomic64_inc(&pp->ckb01_msi->parent[i]);
+++	}
++ 	dw_handle_msi_irq(pp);
++ 
++ 	chained_irq_exit(chip, desc);
++@@ -103,6 +113,7 @@
++ 	msg->address_hi = upper_32_bits(msi_target);
++ 
++ 	msg->data = d->hwirq;
+++	dw_ckb01_message(d, msg);
++ 
++ 	dev_dbg(pci->dev, "msi#%d address_hi %#x address_lo %#x\n",
++ 		(int)d->hwirq, msg->address_hi, msg->address_lo);
++@@ -238,6 +249,8 @@
++ {
++ 	u32 ctrl;
++ 
+++	if (pp->ckb01_msi)
+++		dw_ckb01_cleanup(pp->ckb01_msi);
++ 	for (ctrl = 0; ctrl < MAX_MSI_CTRLS; ctrl++) {
++ 		if (pp->msi_irq[ctrl] > 0)
++ 			irq_set_chained_handler_and_data(pp->msi_irq[ctrl],
++@@ -323,6 +336,8 @@
++ 	u64 *msi_vaddr = NULL;
++ 	int ret;
++ 	u32 ctrl, num_ctrls;
+++
+++	dw_ckb01_init(pp);
++ 
++ 	for (ctrl = 0; ctrl < MAX_MSI_CTRLS; ctrl++)
++ 		pp->irq_mask[ctrl] = ~0;
++--- a/drivers/pci/controller/dwc/pcie-designware.h
+++++ b/drivers/pci/controller/dwc/pcie-designware.h
++@@ -409,7 +409,10 @@
++ 	void (*pme_turn_off)(struct dw_pcie_rp *pp);
++ };
++ 
+++struct dw_ckb01_msi;
+++
++ struct dw_pcie_rp {
+++	struct dw_ckb01_msi *ckb01_msi;
++ 	bool			has_msi_ctrl:1;
++ 	bool			cfg0_io_shared:1;
++ 	u64			cfg0_base;
++--- a/include/linux/mhi.h
+++++ b/include/linux/mhi.h
++@@ -19,6 +19,7 @@
++ 
++ struct mhi_chan;
++ struct mhi_event;
+++struct mhi_diag;
++ struct mhi_ctxt;
++ struct mhi_cmd;
++ struct mhi_buf_info;
++@@ -378,6 +379,7 @@
++ 	struct device *cntrl_dev;
++ 	struct mhi_device *mhi_dev;
++ 	struct dentry *debugfs_dentry;
+++	struct mhi_diag *diag; /* exact CKB01 profile only */
++ 	void __iomem *regs;
++ 	void __iomem *bhi;
++ 	void __iomem *bhie;
++@@ -459,6 +461,23 @@
++ 	void (*fault_cb)(struct mhi_controller *mhi_cntrl, const char *reason);
++ };
++ 
+++enum mhi_diag_stage {
+++	MHI_DIAG_IRQ, MHI_DIAG_EMPTY, MHI_DIAG_SCHEDULE, MHI_DIAG_TASK,
+++	MHI_DIAG_EVENT, MHI_DIAG_COMPLETE, MHI_DIAG_QUEUE, MHI_DIAG_CH_DB,
+++	MHI_DIAG_ER_DB, MHI_DIAG_NET_TX, MHI_DIAG_NET_RX, MHI_DIAG_REFILL,
+++	MHI_DIAG_QMI_TX, MHI_DIAG_QMI_RX, MHI_DIAG_STATE, MHI_DIAG_POLL,
+++	MHI_DIAG_ERROR, MHI_DIAG_MAX,
+++};
+++#if IS_ENABLED(CONFIG_PCI_MSI)
+++void mhi_diag_trace(struct mhi_controller *cntrl, enum mhi_diag_stage stage,
+++		    int er, int ch, u64 a, u64 b, int rc);
+++void mhi_diag_abort(struct mhi_controller *cntrl);
+++#else
+++static inline void mhi_diag_trace(struct mhi_controller *cntrl, enum mhi_diag_stage stage,
+++				 int er, int ch, u64 a, u64 b, int rc) { }
+++static inline void mhi_diag_abort(struct mhi_controller *cntrl) { }
+++#endif
+++
++ /**
++  * struct mhi_device - Structure representing an MHI device which binds
++  *                     to channels or is associated with controllers

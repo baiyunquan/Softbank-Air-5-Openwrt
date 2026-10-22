@@ -1,0 +1,170 @@
+#!/bin/sh
+# Explicit diagnostics only. No boot recovery, channel reconfiguration or reset.
+set -u
+sys=${CKB01_MHI_SYS_ROOT:-/sys}
+proc=${CKB01_MHI_PROC_ROOT:-/proc}
+debug=${CKB01_MHI_DEBUG_ROOT:-/sys/kernel/debug/mhi}
+pcie_debug=${CKB01_MHI_PCIE_ROOT:-/sys/kernel/debug/ckb01-pcie}
+limiter=${CKB01_MHI_TIMEOUT:-/usr/libexec/timeout-coreutils}
+mode=${1:-snapshot}
+out=${2:-/tmp/ckb01-mhi-$(date +%Y%m%d-%H%M%S)-$$}
+lock=${CKB01_MHI_LOCK:-/tmp/ckb01-mhi-debug.lock}
+controller= pci= management= control= logpid= owns_lock= touched=
+children=
+
+stamp() { cut -d' ' -f1 "$proc/uptime" 2>/dev/null || printf 'unknown'; }
+say() { printf 'CKB01-MHI uptime=%s %s\n' "$(stamp)" "$*"; }
+fail() { say "stage=error $*" >&2; exit 1; }
+case "$mode" in snapshot|compare) ;; *) fail 'usage: ckb01-mhi-debug snapshot|compare [new-output-directory]';; esac
+tr '\000' '\n' <"$sys/firmware/devicetree/base/compatible" 2>/dev/null |
+ grep -qx 'oppo,ckb01' || fail 'board is not oppo,ckb01'
+for dev in "$sys"/bus/pci/devices/*; do
+ [ "$(cat "$dev/vendor" 2>/dev/null)" = 0x17cb ] || continue
+ [ "$(cat "$dev/device" 2>/dev/null)" = 0x0306 ] || continue
+ [ "$(cat "$dev/subsystem_vendor" 2>/dev/null)" = 0x17cb ] || continue
+ [ "$(cat "$dev/subsystem_device" 2>/dev/null)" = 0x010c ] || continue
+ [ -z "$pci" ] || fail 'multiple matching PCI endpoints'
+ pci=${dev##*/}
+done
+[ -n "$pci" ] || fail 'matching PCI endpoint absent'
+for dir in "$debug"/*; do
+ [ -r "$dir/ckb01_diag" ] || continue
+ grep -q "pci=$pci " "$dir/ckb01_diag" || continue
+ [ -z "$controller" ] || fail 'multiple matching MHI controllers'
+ controller=$dir
+done
+[ -n "$controller" ] || fail 'ckb01_diag unavailable; boot the matching diagnostic kernel'
+[ ! -e "$out" ] || fail "output directory already exists: $out"
+mkdir -p "$out" || fail 'cannot create output directory'
+
+capture() {
+ name=$1; shift
+ say "stage=capture name=$name begin"
+ rc=0
+ "$@" >"$out/$name.txt" 2>&1 || rc=$?
+ cat "$out/$name.txt"
+ printf '%s\n' "$rc" >"$out/$name.rc"
+ say "stage=capture name=$name rc=$rc"
+}
+dw_trace() {
+ for f in "$pcie_debug"/*/trace; do
+  [ ! -w "$f" ] || printf '%s\n' "$1" >"$f" || return 1
+ done
+}
+snapshot() {
+ phase=$1
+ capture "$phase-uptime" cat "$proc/uptime"
+ capture "$phase-host" cat "$controller/ckb01_diag"
+ capture "$phase-interrupts" cat "$proc/interrupts"
+ for name in states events channels; do
+  [ ! -r "$controller/$name" ] || capture "$phase-$name" cat "$controller/$name"
+ done
+ for f in "$pcie_debug"/*/msi; do
+  [ ! -r "$f" ] || capture "$phase-dw-$(basename "$(dirname "$f")")" cat "$f"
+ done
+ capture "$phase-netstats" ip -s -d link
+ capture "$phase-route" ip route get 169.254.10.2
+}
+cleanup() {
+ # Stop only a window owned by this invocation, including on SSH disconnect.
+ if [ -n "$touched" ]; then
+  printf 'stop\n' >"$controller/ckb01_poll" 2>/dev/null || :
+  dw_trace stop || :
+ fi
+ for child in $children; do kill -TERM "$child" 2>/dev/null || :; done
+ for child in $children; do wait "$child" 2>/dev/null || :; done
+ [ -z "$logpid" ] || { kill "$logpid" 2>/dev/null || :; wait "$logpid" 2>/dev/null || :; }
+ [ -z "$owns_lock" ] || rmdir "$lock" 2>/dev/null || :
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+capture boot-id cat "$proc/sys/kernel/random/boot_id"
+capture kernel uname -a
+capture discovery ckb01-modem discover
+say "stage=begin mode=$mode pci=$pci controller=$controller output=$out"
+if [ "$mode" = snapshot ]; then
+ snapshot snapshot
+ capture kernel-log dmesg
+ say "stage=end mode=snapshot output=$out"
+ exit 0
+fi
+[ -x "$limiter" ] || fail "timeout missing: $limiter"
+[ -w "$controller/ckb01_poll" ] || fail 'ckb01_poll not writable'
+[ ! -d /tmp/ckb01-modem-wait.lock ] || fail 'bootstrap still active; wait for its 120-second deadline'
+mkdir "$lock" 2>/dev/null || fail 'another compare is active'
+owns_lock=1
+grep -q 'enabled=0' "$controller/ckb01_diag" || fail 'another diagnostic window is active'
+management=$(jsonfilter -i "$out/discovery.txt" -e '@.management' 2>/dev/null)
+control=$(jsonfilter -i "$out/discovery.txt" -e '@.control' 2>/dev/null)
+[ -n "$management" ] && [ -n "$control" ] || fail 'management/QMI roles missing'
+capture management-address ip -4 addr show dev "$management"
+grep -q '169.254.10.1/24' "$out/management-address.txt" || fail 'management address missing; no automatic reconfiguration'
+capture kernel-log-before dmesg
+dmesg -w >"$out/kernel-stream.txt" 2>&1 &
+logpid=$!
+
+probe_one() {
+ phase=$1; role=$2; shift 2
+ rc=0
+ query_pid=
+ probe_cleanup() {
+  if [ -n "$query_pid" ]; then
+   # GNU timeout owns this process group; include its probe descendants.
+   kill -TERM -- "-$query_pid" 2>/dev/null || kill -TERM "$query_pid" 2>/dev/null || :
+   kill -KILL -- "-$query_pid" 2>/dev/null || :
+   wait "$query_pid" 2>/dev/null || :
+  fi
+ }
+ trap 'probe_cleanup; exit 143' TERM INT HUP
+ say "stage=probe phase=$phase role=$role begin" >"$out/$phase-$role.txt"
+ "$limiter" -k 1 15 "$@" >>"$out/$phase-$role.txt" 2>&1 &
+ query_pid=$!
+ wait "$query_pid" || rc=$?
+ query_pid=
+ trap - TERM INT HUP
+ printf '%s\n' "$rc" >"$out/$phase-$role.rc"
+ say "stage=probe phase=$phase role=$role rc=$rc" >>"$out/$phase-$role.txt"
+}
+probes() {
+ phase=$1
+ probe_one "$phase" ping ping -c 3 -W 2 -I "$management" 169.254.10.2 & p1=$!
+ probe_one "$phase" qmi ckb01-modem --device "$control" probe --transport-only & p2=$!
+ probe_one "$phase" qrtr ckb01-modem --device qrtr probe --transport-only & p3=$!
+ children="$p1 $p2 $p3"
+ for child in $children; do wait "$child" || :; done
+ children=
+ for role in ping qmi qrtr; do cat "$out/$phase-$role.txt"; done
+}
+
+touched=1
+printf 'trace\n' >"$controller/ckb01_poll" || fail 'baseline trace rejected'
+dw_trace start || fail 'DWC trace rejected'
+snapshot baseline-before
+probes baseline
+snapshot baseline-after
+printf 'stop\n' >"$controller/ckb01_poll" || fail 'baseline stop rejected'
+dw_trace stop || :
+
+# Exactly one start, no automatic retry. Kernel independently enforces all limits.
+dw_trace start || fail 'DWC trace rejected'
+printf 'start\n' >"$controller/ckb01_poll" || fail 'software-consumption start rejected'
+say 'stage=poll_start max_seconds=30 interval_ms=20 per_ring=64 total=4096'
+snapshot poll-start
+probes poll
+snapshot poll-after-queries
+left=35
+while grep -q 'enabled=1' "$controller/ckb01_diag" && [ "$left" -gt 0 ]; do
+ sleep 1
+ left=$((left - 1))
+done
+printf 'stop\n' >"$controller/ckb01_poll" || fail 'poll stop rejected'
+dw_trace stop || :
+touched=
+snapshot stopped
+# A fresh query after polling stops distinguishes transient draining from IRQ recovery.
+probes stopped
+snapshot final
+capture kernel-log-after dmesg
+capture relevant-kernel-log sh -c 'grep -E "CKB01-MHI|mhi|wwan|AER|pcie" "$1"' sh "$out/kernel-stream.txt"
+say "stage=end mode=compare output=$out transport_failures_are_evidence=1"

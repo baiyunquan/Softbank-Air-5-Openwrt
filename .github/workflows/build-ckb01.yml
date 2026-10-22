@@ -275,6 +275,7 @@ jobs:
           cp builder/docs/CKB01_SDX55_PORTING.md artifacts/
           cp builder/docs/CKB01_MHI_MAINLINE.md artifacts/
           cp builder/packages/ckb01-modem/files/endpoint-evidence.json artifacts/
+          cp builder/docs/CKB01_MHI_DIAGNOSTICS.md artifacts/
           cp builder/docs/CKB01_OEM_MANAGEMENT.md artifacts/
           cp builder/devices/oppo_ckb01/firmware/provenance.json artifacts/bdf-provenance.json
           cp builder/packages/ckb01-oem-tools/vendor/provenance.json artifacts/oem-runtime-provenance.json

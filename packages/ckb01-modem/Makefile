@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 include $(TOPDIR)/rules.mk
 PKG_NAME:=ckb01-modem
-PKG_RELEASE:=3
+PKG_RELEASE:=4
 PKG_LICENSE:=GPL-2.0-only
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 PKG_BUILD_DEPENDS:=libqmi libqrtr-glib libjson-c
@@ -38,6 +38,7 @@ define Package/ckb01-modem/install
 	$(INSTALL_DATA) ./files/heartbeat-index.html $(1)/usr/share/ckb01-modem/heartbeat/index.html
 	$(LN) ../init.d/ckb01-heartbeat $(1)/etc/rc.d/S14ckb01-heartbeat
 	$(INSTALL_BIN) ./files/ckb01-modem-wait $(1)/usr/sbin/
+	$(INSTALL_BIN) ./files/ckb01-mhi-debug $(1)/usr/sbin/
 	$(LN) ../init.d/ckb01-modem $(1)/etc/rc.d/S96ckb01-modem
 	$(CP) ./files/endpoint-evidence.json $(1)/usr/share/ckb01-modem/
 	$(CP) ./files/mbn-sha256.json $(1)/usr/share/ckb01-modem/

@@ -126,7 +126,7 @@ def verify_initramfs(path, kernel, wireless=False, modem=False):
         verify_oem_runtime(entries)
         for name in ("usr/sbin/ckb01-modem", "usr/bin/qmicli", "usr/libexec/qmi-proxy",
                      "lib/netifd/proto/ckb01_qmi.sh", "lib/netifd/ckb01-update",
-                     "usr/sbin/ckb01-session", "usr/sbin/ckb01-modem-wait",
+                     "usr/sbin/ckb01-session", "usr/sbin/ckb01-modem-wait", "usr/sbin/ckb01-mhi-debug",
                      "etc/init.d/ckb01-modem", "etc/rc.d/S96ckb01-modem",
                      "etc/init.d/ckb01-heartbeat", "etc/rc.d/S14ckb01-heartbeat",
                      "usr/sbin/uhttpd", "usr/share/ckb01-modem/heartbeat/index.html",
@@ -136,6 +136,7 @@ def verify_initramfs(path, kernel, wireless=False, modem=False):
             require(bool(entries.get(name)), f"modem initramfs is missing {name}")
         modem_files = Path(__file__).resolve().parents[1] / "packages/ckb01-modem/files"
         for installed, source in (("usr/sbin/ckb01-modem-wait", "ckb01-modem-wait"),
+                                  ("usr/sbin/ckb01-mhi-debug", "ckb01-mhi-debug"),
                                   ("lib/netifd/proto/ckb01_qmi.sh", "ckb01_qmi.sh"),
                                   ("usr/share/ckb01-modem/endpoint-evidence.json", "endpoint-evidence.json")):
             require(entries[installed] == (modem_files / source).read_bytes(),
