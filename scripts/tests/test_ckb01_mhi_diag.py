@@ -21,6 +21,25 @@ def kernel_patch():
 
 
 class KernelDiagnostics(unittest.TestCase):
+    def test_dwc_patch_applies_to_pinned_openwrt_backports(self):
+        import shutil
+        import re
+        fixture = ROOT / 'scripts/tests/fixtures/ckb01-pinned-dwc'
+        inner = ''.join(line[1:] + '\n' for line in PATCH.read_text().splitlines()[3:])
+        sections = re.split(r'(?=^--- (?:a/|/dev/null))', inner, flags=re.M)
+        patch = ''.join(section for section in sections
+                        if '+++ b/drivers/pci/controller/dwc/' in section) + '\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            shutil.copytree(fixture, tmp, dirs_exist_ok=True)
+            result = subprocess.run(['patch', '--batch', '--fuzz=0', '-p1'],
+                                    cwd=tmp, input=patch, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            source = (Path(tmp)/'drivers/pci/controller/dwc/pcie-designware-host.c').read_text()
+            self.assertIn('generic_handle_demux_domain_irq', source)
+            self.assertIn('.irq_pre_redirect', source)
+            self.assertIn('irq_chip_redirect_set_affinity', source)
+            self.assertNotIn('generic_handle_domain_irq(pp->irq_domain', source)
+
     def test_fault_gates_mmio_before_diagnostic_abort(self):
         section=kernel_patch().split('--- a/drivers/bus/mhi/host/pci_generic.c\n')[-1].split('--- a/')[0]
         gate=section.find('pm_state = MHI_PM_LD_ERR_FATAL_DETECT')
@@ -53,7 +72,7 @@ class KernelDiagnostics(unittest.TestCase):
         text = kernel_patch()
         for item in ['CKB01-MHI', 'msivec', 'parent_data', 'msi_msg',
                      'PCIE_MSI_INTR0_STATUS', 'PCIE_MSI_INTR0_MASK',
-                     'PCIE_MSI_INTR0_ENABLE', 'generic_handle_domain_irq',
+                     'PCIE_MSI_INTR0_ENABLE', 'generic_handle_demux_domain_irq',
                      'MHI_DIAG_IRQ', 'MHI_DIAG_TASK', 'MHI_DIAG_EVENT',
                      'MHI_DIAG_COMPLETE', 'MHI_DIAG_CH_DB', 'MHI_DIAG_ER_DB',
                      'MHI_DIAG_NET_RX', 'MHI_DIAG_REFILL', 'MHI_DIAG_QMI_RX',

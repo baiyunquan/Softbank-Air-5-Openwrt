@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/target/linux/qualcommax/patches-6.18/951-ckb01-mhi-diagnostics.patch
-@@ -0,0 +1,1099 @@
+@@ -0,0 +1,1091 @@
 +--- a/drivers/bus/mhi/host/Makefile
 ++++ b/drivers/bus/mhi/host/Makefile
 +@@ -1,5 +1,6 @@
@@ -976,37 +976,28 @@
 + 
 + static struct pci_ops dw_pcie_ops;
 + static struct pci_ops dw_pcie_ecam_ops;
-+@@ -48,7 +49,7 @@
-+ /* MSI int handler */
-+ irqreturn_t dw_handle_msi_irq(struct dw_pcie_rp *pp)
-+ {
-+-	int i, pos;
-++	int i, pos, rc;
-+ 	unsigned long val;
-+ 	u32 status, num_ctrls;
-+ 	irqreturn_t ret = IRQ_NONE;
-+@@ -59,6 +60,8 @@
-+ 	for (i = 0; i < num_ctrls; i++) {
-+ 		status = dw_pcie_readl_dbi(pci, PCIE_MSI_INTR0_STATUS +
-+ 					   (i * MSI_REG_CTRL_BLOCK_SIZE));
++@@ -76,11 +77,18 @@
++ 		unsigned long status, pos;
++ 
++ 		status = dw_pcie_readl_dbi(pci, PCIE_MSI_INTR0_STATUS + reg_off);
 ++		if (pp->ckb01_msi)
 ++			WRITE_ONCE(pp->ckb01_msi->last_status[i], status);
 + 		if (!status)
 + 			continue;
 + 
-+@@ -67,9 +70,10 @@
-+ 		pos = 0;
-+ 		while ((pos = find_next_bit(&val, MAX_MSI_IRQS_PER_CTRL,
-+ 					    pos)) != MAX_MSI_IRQS_PER_CTRL) {
-+-			generic_handle_domain_irq(pp->irq_domain,
-++			rc = generic_handle_domain_irq(pp->irq_domain,
-+ 						  (i * MAX_MSI_IRQS_PER_CTRL) +
-+ 						  pos);
-++			dw_ckb01_received(pp, i * MAX_MSI_IRQS_PER_CTRL + pos, status, rc);
-+ 			pos++;
-+ 		}
++-		for_each_set_bit(pos, &status, MAX_MSI_IRQS_PER_CTRL)
++-			generic_handle_demux_domain_irq(pp->irq_domain, irq_off + pos);
+++		for_each_set_bit(pos, &status, MAX_MSI_IRQS_PER_CTRL) {
+++			bool accepted;
+++
+++			/* Preserve the pinned OpenWrt IRQ-work/affinity redirection. */
+++			accepted = generic_handle_demux_domain_irq(pp->irq_domain, irq_off + pos);
+++			dw_ckb01_received(pp, irq_off + pos, status, accepted ? 0 : -EINVAL);
+++		}
 + 	}
-+@@ -86,6 +90,12 @@
++ }
++ 
++@@ -93,6 +101,12 @@
 + 	chained_irq_enter(chip, desc);
 + 
 + 	pp = irq_desc_get_handler_data(desc);
@@ -1019,24 +1010,25 @@
 + 	dw_handle_msi_irq(pp);
 + 
 + 	chained_irq_exit(chip, desc);
-+@@ -103,6 +113,7 @@
++@@ -107,6 +121,7 @@
++ 	msg->address_lo = lower_32_bits(msi_target);
 + 	msg->address_hi = upper_32_bits(msi_target);
-+ 
 + 	msg->data = d->hwirq;
 ++	dw_ckb01_message(d, msg);
 + 
 + 	dev_dbg(pci->dev, "msi#%d address_hi %#x address_lo %#x\n",
 + 		(int)d->hwirq, msg->address_hi, msg->address_lo);
-+@@ -238,6 +249,8 @@
++@@ -228,6 +243,9 @@
 + {
 + 	u32 ctrl;
 + 
 ++	if (pp->ckb01_msi)
 ++		dw_ckb01_cleanup(pp->ckb01_msi);
+++
 + 	for (ctrl = 0; ctrl < MAX_MSI_CTRLS; ctrl++) {
 + 		if (pp->msi_irq[ctrl] > 0)
-+ 			irq_set_chained_handler_and_data(pp->msi_irq[ctrl],
-+@@ -323,6 +336,8 @@
++ 			irq_set_chained_handler_and_data(pp->msi_irq[ctrl], NULL, NULL);
++@@ -312,6 +330,8 @@
 + 	u64 *msi_vaddr = NULL;
 + 	int ret;
 + 	u32 ctrl, num_ctrls;

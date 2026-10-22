@@ -32,7 +32,7 @@ ssh root@192.168.5.1 ckb01-mhi-debug compare | tee mhi-compare.txt
 - 复用主线完成解析、客户端回调和回收；正常 IRQ 保持运行。软件消费使用同一事件锁，以 `src=poll` 区分其事件/完成记录。
 - 错误与窗口结束始终记录。每窗口普通日志最多256条、每阶段最多16条；计数不受采样限制。
 - 掉电、remove、上下文释放前同步停止工作；故障回调仅设置终止标志，不等待、不复位、不读 BAR。
-- `/sys/kernel/debug/ckb01-pcie/*/msi` 提供 DWC 目标地址、每 bank 的 status/mask/enable、父 IRQ/hwirq、分发与失败计数。`trace` 写 `start` / `stop` 开启或停止最长30秒限量输出。快照只读 STATUS，不做 W1C 清除；失链后不读 DBI。
+- `/sys/kernel/debug/ckb01-pcie/*/msi` 提供 DWC 目标地址、每 bank 的 status/mask/enable、父 IRQ/hwirq、分发与失败计数。`trace` 写 `start` / `stop` 开启或停止最长30秒限量输出。快照只读 STATUS，不做 W1C 清除；失链后不读 DBI。保留固定 OpenWrt 的 `generic_handle_demux_domain_irq` 和 IRQ-work 亲和性重定向；`dw_dispatch rc=0` 仅表示映射分发被接受，不能代替后续 MHI handler 进入证据。
 
 诊断仅对整机 `oppo,ckb01` 及 PCI/subsystem `17cb:0306 / 17cb:010c` 的端点生效。DWC 在该板创建观察目录，但仅将匹配端点分配的向量纳入追踪。
 
