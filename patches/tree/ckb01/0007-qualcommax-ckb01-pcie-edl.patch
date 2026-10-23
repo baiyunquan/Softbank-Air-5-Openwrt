@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/target/linux/qualcommax/patches-6.18/952-ckb01-pcie-edl.patch
-@@ -0,0 +1,860 @@
+@@ -0,0 +1,894 @@
 +--- a/drivers/bus/mhi/host/boot.c
 ++++ b/drivers/bus/mhi/host/boot.c
 +@@ -255,14 +255,26 @@
@@ -85,6 +85,16 @@
 + 	if (ret) {
 + 		dev_err(dev, "Error loading firmware: %d\n", ret);
 + 		goto error_fw_load;
++--- a/drivers/bus/mhi/host/ckb01_diag.c
+++++ b/drivers/bus/mhi/host/ckb01_diag.c
++@@ -99,6 +99,7 @@
++ 	cancel_delayed_work_sync(&diag->work);
++ 	mutex_unlock(&diag->control);
++ }
+++EXPORT_SYMBOL_GPL(mhi_diag_stop);
++ 
++ static void mhi_diag_work(struct work_struct *work)
++ {
 +--- a/drivers/bus/mhi/host/init.c
 ++++ b/drivers/bus/mhi/host/init.c
 +@@ -944,6 +944,7 @@
@@ -184,7 +194,23 @@
 + {
 +--- a/drivers/bus/mhi/host/main.c
 ++++ b/drivers/bus/mhi/host/main.c
-+@@ -465,6 +465,10 @@
++@@ -22,6 +22,7 @@
++ {
++ 	return mhi_cntrl->read_reg(mhi_cntrl, base + offset, out);
++ }
+++EXPORT_SYMBOL_GPL(mhi_read_reg);
++ 
++ int __must_check mhi_read_reg_field(struct mhi_controller *mhi_cntrl,
++ 				    void __iomem *base, u32 offset,
++@@ -66,6 +67,7 @@
++ {
++ 	mhi_cntrl->write_reg(mhi_cntrl, base + offset, val);
++ }
+++EXPORT_SYMBOL_GPL(mhi_write_reg);
++ 
++ int __must_check mhi_write_reg_field(struct mhi_controller *mhi_cntrl,
++ 				     void __iomem *base, u32 offset, u32 mask,
++@@ -465,6 +467,10 @@
 + 			"mhi_ctxt has been freed\n");
 + 		return IRQ_HANDLED;
 + 	}
@@ -195,7 +221,7 @@
 + 
 + 	er_ctxt = &mhi_cntrl->mhi_ctxt->er_ctxt[mhi_event->er_index];
 + 	ptr = le64_to_cpu(er_ctxt->rp);
-+@@ -1483,6 +1487,32 @@
++@@ -1483,6 +1489,32 @@
 + 
 + 	mutex_lock(&mhi_chan->mutex);
 + 
@@ -770,7 +796,15 @@
 + 		timer_delete_sync(&mhi_pdev->health_check_timer);
 +--- a/drivers/bus/mhi/host/pm.c
 ++++ b/drivers/bus/mhi/host/pm.c
-+@@ -820,6 +820,12 @@
++@@ -764,6 +764,7 @@
++ 
++ 	mutex_unlock(&mhi_cntrl->pm_mutex);
++ }
+++EXPORT_SYMBOL_GPL(mhi_queue_state_transition);
++ 
++ /* Queue a new work item and schedule work */
++ int mhi_queue_state_transition(struct mhi_controller *mhi_cntrl,
++@@ -820,6 +821,12 @@
 + 	list_for_each_entry_safe(itr, tmp, &head, node) {
 + 		list_del(&itr->node);
 + 
@@ -783,7 +817,7 @@
 + 		trace_mhi_pm_st_transition(mhi_cntrl, itr->state);
 + 
 + 		switch (itr->state) {
-+@@ -854,6 +860,8 @@
++@@ -854,6 +861,8 @@
 + 			write_unlock_irq(&mhi_cntrl->pm_lock);
 + 			mhi_create_devices(mhi_cntrl);
 + 			mhi_uevent_notify(mhi_cntrl, mhi_cntrl->ee);
@@ -792,7 +826,7 @@
 + 			break;
 + 		case DEV_ST_TRANSITION_READY:
 + 			mhi_ready_state_transition(mhi_cntrl);
-+@@ -1160,7 +1168,7 @@
++@@ -1160,7 +1169,7 @@
 + 	current_ee = mhi_get_exec_env(mhi_cntrl);
 + 	write_unlock_irq(&mhi_cntrl->pm_lock);
 + 
@@ -801,7 +835,7 @@
 + 		u32 ready = 0;
 + 
 + 		state = mhi_get_mhi_state(mhi_cntrl);
-+@@ -1180,7 +1188,8 @@
++@@ -1180,7 +1189,8 @@
 + 	}
 + 
 + 	/* Confirm that the device is in valid exec env */
@@ -811,7 +845,7 @@
 + 		dev_err(dev, "%s is not a valid EE for power on\n",
 + 			TO_MHI_EXEC_STR(current_ee));
 + 		ret = -EIO;
-+@@ -1215,6 +1224,13 @@
++@@ -1215,6 +1225,13 @@
 + 		mhi_write_reg(mhi_cntrl, mhi_cntrl->bhi, BHI_INTVEC, 0);
 + 	}
 + 
@@ -825,7 +859,7 @@
 + 	/* IRQs have been requested during probe, so we just need to enable them. */
 + 	enable_irq(mhi_cntrl->irq[0]);
 + 
-+@@ -1226,7 +1242,8 @@
++@@ -1226,7 +1243,8 @@
 + 	}
 + 
 + 	/* Transition to next state */

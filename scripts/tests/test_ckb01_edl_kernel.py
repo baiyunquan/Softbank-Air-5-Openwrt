@@ -163,6 +163,45 @@ int main(void) {
         self.assertIn('READ_ONCE(cntrl->ckb01_fp_ready)', source)
         self.assertIn('device_is_bound(&cntrl->mhi_chan[34].mhi_dev->dev)', source)
 
+    def test_new_pci_dependencies_are_exported_by_core(self):
+        source = added()
+        for symbol in ('mhi_read_reg', 'mhi_write_reg', 'mhi_diag_stop',
+                       'mhi_queue_state_transition'):
+            self.assertIn('EXPORT_SYMBOL_GPL(' + symbol + ');', source)
+
+    def test_compiled_pci_mhi_imports_have_core_exports(self):
+        build = os.environ.get('CKB01_KERNEL_BUILD')
+        if not build:
+            self.skipTest('CKB01_KERNEL_BUILD not set; compiled module boundary check run separately')
+        host = Path(build) / 'drivers/bus/mhi/host'
+        nm = shutil.which('llvm-nm') or shutil.which('nm')
+        imports = subprocess.run([nm, '-u', str(host / 'mhi_pci_generic.o')],
+                                 check=True, text=True, capture_output=True).stdout
+        symbols = subprocess.run([nm, str(host / 'mhi.o')],
+                                 check=True, text=True, capture_output=True).stdout
+        required = set(re.findall(r'\bU (mhi_\w+)$', imports, re.M))
+        exports = set(re.findall(r'__export_symbol_(mhi_\w+)$', symbols, re.M))
+        exports.update(re.findall(r'__ksymtab_(mhi_\w+)$', symbols, re.M))
+        self.assertTrue(required, 'compiled PCI object has no MHI imports')
+        self.assertFalse(required - exports, 'unexported MHI PCI dependencies: ' +
+                         ', '.join(sorted(required - exports)))
+        # Exercise the real kernel modpost parser too. This isolated pair has no
+        # vmlinux symbol table, so unrelated kernel imports are warnings; every
+        # MHI PCI dependency must still appear in modpost's actual export table.
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ('mhi.o', 'mhi_pci_generic.o'):
+                shutil.copyfile(host / name, Path(tmp) / name)
+            result = subprocess.run([str(Path(build) / 'scripts/mod/modpost'), '-w', '-M',
+                                     '-o', str(Path(tmp) / 'Module.symvers'),
+                                     str(Path(tmp) / 'mhi.o'), str(Path(tmp) / 'mhi_pci_generic.o')],
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            actual = (Path(tmp) / 'Module.symvers').read_text()
+            modpost_exports = set(re.findall(r'^\S+\s+(mhi_\w+)\s+', actual, re.M))
+            self.assertFalse(required - modpost_exports,
+                             'MHI imports absent from modpost exports: ' +
+                             ', '.join(sorted(required - modpost_exports)))
+
     def test_pinned_kernel_patch_application(self):
         base = os.environ.get('CKB01_KERNEL_BASE')
         if not base:
