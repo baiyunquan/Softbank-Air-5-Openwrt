@@ -1,0 +1,16 @@
+QFenix source provenance
+========================
+Source: https://github.com/iamromulan/qfenix.git
+Pinned local research checkout:
+  research/ckb01-pcie-edl-20261023/qfenix
+Commit: 318a49cee9663a6a79fbcc8b44db8a3d2afdec2b
+
+sha2.c and sha2.h are copied unchanged from this source, retaining their original
+Aaron D. Gifford / OpenBSD attribution. LICENSE.qfenix is the upstream BSD-3-Clause
+license. ckb01-firehose-read.c adapts only Firehose configure, getstorageinfo,
+read command syntax and the NAND MIBIB/SMEM layout from firehose.c and gpt.c.
+
+The transport is independently bounded poll/read/write on an existing mainline
+WWAN character device. There is no USB, Sahara, BHI ioctl, programmer upload,
+raw XML input, erase, program, patch, power, reset or automatic resume path.
+Only configure, getstorageinfo and read XML commands can be emitted.
