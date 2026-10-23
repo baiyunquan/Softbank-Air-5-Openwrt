@@ -32,6 +32,17 @@ def check(entries, label):
  for library in ('libxml2.so', 'libjson-c.so'):
   if not any(Path(p).name.startswith(library) for p in entries):
    raise ValueError(f'{label}: missing {library}')
+ for module, tokens in (('mhi_pci_generic', (b'ckb01_edl_maintenance', b'ckb01-firehose')),
+                        ('mhi', (b'mhi_ckb01_retire_reset_controller',))):
+  candidates = [(name, data) for name, data in entries.items()
+                if Path(name).name in (module+'.ko', module+'.ko.zst', module+'.ko.gz')]
+  if len(candidates) != 1:
+   raise ValueError(f'{label}: kernel module {module} absent or ambiguous')
+  name, blob = candidates[0]
+  if name.endswith('.zst'): blob = subprocess.check_output(['zstd', '-qdc'], input=blob)
+  elif name.endswith('.gz'): blob = gzip.decompress(blob)
+  if not blob.startswith(b'\x7fELF') or any(token not in blob for token in tokens):
+   raise ValueError(f'{label}: kernel module {module} lacks maintenance implementation')
  print(f'{label}: maintenance files, binary and dependencies present')
 
 def main():

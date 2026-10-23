@@ -31,9 +31,19 @@ class Maintenance(unittest.TestCase):
   m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
   entries={p:src.read_bytes() for p,src in m.FILES.items()}
   entries[m.BINARY]=b'\x7fELFbinary';entries['usr/lib/libxml2.so.16']=b'x';entries['usr/lib/libjson-c.so.5']=b'x'
+  entries['lib/modules/test/mhi_pci_generic.ko']=b'\x7fELFckb01_edl_maintenance ckb01-firehose'
+  entries['lib/modules/test/mhi.ko']=b'\x7fELFmhi_ckb01_retire_reset_controller'
   m.check(entries,'fixture')
   del entries['etc/ckb01-maintenance']
   with self.assertRaises(ValueError): m.check(entries,'fixture')
+ def test_payload_checker_rejects_stale_kernel(self):
+  spec=importlib.util.spec_from_file_location('maintenance',ROOT/'scripts/ckb01-maintenance-check.py')
+  m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+  entries={p:src.read_bytes() for p,src in m.FILES.items()}
+  entries[m.BINARY]=b'\x7fELFbinary';entries['usr/lib/libxml2.so.16']=b'x';entries['usr/lib/libjson-c.so.5']=b'x'
+  entries['lib/modules/test/mhi_pci_generic.ko']=b'\x7fELFold-driver'
+  with self.assertRaisesRegex(ValueError, 'kernel'):
+   m.check(entries,'fixture')
  def test_workflow_separate_trigger_and_raw_upload(self):
   child=(ROOT/'.github/workflows/build-ckb01-maintenance.yml').read_text()
   self.assertIn('branches: [ckb01-pcie-edl]',child)
