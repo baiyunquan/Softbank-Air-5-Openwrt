@@ -17,7 +17,7 @@ class Maintenance(unittest.TestCase):
  def test_maintenance_is_opt_in(self):
   self.assertNotIn('CONFIG_PACKAGE_ckb01-edl=y',(ROOT/'devices/oppo_ckb01/config').read_text())
   self.assertIn('CONFIG_PACKAGE_ckb01-edl=y',(ROOT/'devices/oppo_ckb01/maintenance.config').read_text())
-  self.assertIn('ckb01_edl_maintenance=1',(ROOT/'packages/ckb01-edl/files/ckb01-edl.conf').read_text())
+  self.assertIn('ckb01_edl_maintenance=1',(ROOT/'packages/ckb01-edl/files/ckb01-edl.modules').read_text())
  def test_no_implicit_backup_entry(self):
   script=(ROOT/'packages/ckb01-edl/files/ckb01-edl').read_text().split(' backup-efs)')[1]
   self.assertNotIn('echo arm',script)

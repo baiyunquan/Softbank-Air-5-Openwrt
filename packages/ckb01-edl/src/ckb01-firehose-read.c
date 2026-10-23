@@ -193,9 +193,19 @@ static int storage_log(struct client *c, const char *text)
         bool valid = json_tokener_get_error(tok) == json_tokener_success && obj && json_object_is_type(obj, json_type_object);
         json_tokener_free(tok);
         if (!valid) { if (obj) json_object_put(obj); return fail(c, "Malformed storage JSON"); }
+        /* The pinned SDX55 programmer logs a storage_info JSON envelope.
+         * Merge both views so conflicting root/nested values cannot be hidden. */
+        json_object *views[2] = {obj, NULL};
+        if (json_object_object_get_ex(obj, "storage_info", &views[1]) &&
+            !json_object_is_type(views[1], json_type_object)) {
+            json_object_put(obj); return fail(c, "Invalid storage_info envelope");
+        }
+        for (size_t vindex = 0; vindex < 2; vindex++) {
+            json_object *view = views[vindex];
+            if (!view) continue;
         for (size_t i = 0; i < sizeof(keys)/sizeof(keys[0]); i++) {
             json_object *v;
-            if (json_object_object_get_ex(obj, keys[i], &v)) {
+            if (json_object_object_get_ex(view, keys[i], &v)) {
                 uint64_t value;
                 if ((!json_object_is_type(v, json_type_int) && !json_object_is_type(v, json_type_string)) ||
                     !number(json_object_get_string(v), &value) || merge_value(c, keys[i], value)) {
@@ -204,13 +214,13 @@ static int storage_log(struct client *c, const char *text)
             }
         }
         json_object *mem;
-        if (json_object_object_get_ex(obj, "mem_type", &mem) &&
+        if (json_object_object_get_ex(view, "mem_type", &mem) &&
             (!json_object_is_type(mem, json_type_string) ||
              strcasecmp(json_object_get_string(mem), "nand"))) {
             json_object_put(obj); return fail(c, "Programmer storage is not NAND");
         }
         json_object *policy;
-        if (json_object_object_get_ex(obj, "bad_block_policy", &policy)) {
+        if (json_object_object_get_ex(view, "bad_block_policy", &policy)) {
             if (!json_object_is_type(policy, json_type_string)) {
                 json_object_put(obj); return fail(c, "Invalid reported bad-block policy");
             }
@@ -218,6 +228,7 @@ static int storage_log(struct client *c, const char *text)
                                    json_object_new_string(json_object_get_string(policy)));
             json_object_object_add(c->metadata, "bad_block_policy_source",
                                    json_object_new_string("programmer getstorageinfo"));
+        }
         }
         json_object_put(obj);
     } else {

@@ -219,6 +219,18 @@ class ReaderTests(unittest.TestCase):
         self.assertIn(b'rawmode="false"', (output/'firehose.xml.log').read_bytes())
         self.assertFalse(list(output.glob('*.partial')))
 
+    def test_pinned_programmer_nested_storage_info(self):
+        geometry = {'storage_info': {'page_size': PAGE, 'block_size': ERASE,
+                    'total_blocks': 2048, 'mem_type': 'nand'}}
+        rc, _, report, _, _, stderr = self.run_reader(geometry=geometry)
+        self.assertEqual(rc, 0, stderr)
+        self.assertTrue(report['transport_complete'])
+
+    def test_nested_geometry_contradiction_is_rejected(self):
+        geometry = {'page_size': 2048, 'storage_info': {'page_size': PAGE,
+                    'block_size': ERASE, 'total_blocks': 2048}}
+        self.assert_failure(self.run_reader(geometry=geometry), 'geometry')
+
     def test_key_value_geometry(self):
         rc, _, report, _, _, stderr = self.run_reader(geometry='page_size=4096 block_size=262144 total_blocks=2048', separate_info=True)
         self.assertEqual(rc, 0, stderr)

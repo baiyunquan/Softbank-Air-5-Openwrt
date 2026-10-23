@@ -24,10 +24,10 @@ define Build/Compile
 		-o $(PKG_BUILD_DIR)/ckb01-firehose-read $(TARGET_LDFLAGS) -lxml2 -ljson-c
 endef
 define Package/ckb01-edl/install
-	$(INSTALL_DIR) $(1)/usr/sbin $(1)/usr/libexec $(1)/etc/modprobe.d $(1)/usr/share/ckb01-edl $(1)/lib/firmware/qcom/ckb01
+	$(INSTALL_DIR) $(1)/usr/sbin $(1)/usr/libexec $(1)/etc/modules.d $(1)/usr/share/ckb01-edl $(1)/lib/firmware/qcom/ckb01
 	$(INSTALL_BIN) ./files/ckb01-edl $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/ckb01-firehose-read $(1)/usr/libexec/
-	$(INSTALL_DATA) ./files/ckb01-edl.conf $(1)/etc/modprobe.d/
+	$(INSTALL_DATA) ./files/ckb01-edl.modules $(1)/etc/modules.d/29-ckb01-edl
 	$(INSTALL_DATA) ./files/maintenance $(1)/etc/ckb01-maintenance
 	$(INSTALL_DATA) ./firmware/prog_firehose_sdx55.mbn $(1)/lib/firmware/qcom/ckb01/
 	$(INSTALL_DATA) ./firmware/provenance.json $(1)/usr/share/ckb01-edl/

@@ -17,7 +17,7 @@ SPEC.loader.exec_module(fit)
 FILES = {
  'usr/sbin/ckb01-edl': ROOT / 'packages/ckb01-edl/files/ckb01-edl',
  'etc/ckb01-maintenance': ROOT / 'packages/ckb01-edl/files/maintenance',
- 'etc/modprobe.d/ckb01-edl.conf': ROOT / 'packages/ckb01-edl/files/ckb01-edl.conf',
+ 'etc/modules.d/29-ckb01-edl': ROOT / 'packages/ckb01-edl/files/ckb01-edl.modules',
  'lib/firmware/qcom/ckb01/prog_firehose_sdx55.mbn': ROOT / 'packages/ckb01-edl/firmware/prog_firehose_sdx55.mbn',
  'usr/share/ckb01-edl/provenance.json': ROOT / 'packages/ckb01-edl/firmware/provenance.json',
 }
