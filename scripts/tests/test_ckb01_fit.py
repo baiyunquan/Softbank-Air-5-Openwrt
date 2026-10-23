@@ -60,7 +60,7 @@ class Ckb01FitTests(unittest.TestCase):
 
     def make_fit(self, *, board="oppo,ckb01", missing_module=False,
                  oversized=False, swapped_phy=False, wireless=False, bad_bdf=False, missing_segment=False,
-                 compressed_initramfs=False, modem=False, stale_bootstrap=False, dwc_msi=False):
+                 compressed_initramfs=False, modem=False, stale_bootstrap=False, dwc_msi=False, missing_diag=False):
         paths = [name for name in REQUIRED if not (missing_module and name.endswith("mhi_wwan_ctrl.ko"))]
         contents = {}
         if wireless:
@@ -97,9 +97,18 @@ class Ckb01FitTests(unittest.TestCase):
             oem_paths = ["usr/bin/oatprsync", "usr/bin/adb", "usr/libexec/timeout-coreutils",
                          "usr/sbin/ckb01-oem", "usr/sbin/ckb01-adb", "lib/functions/ckb01-oem.sh",
                          "usr/lib/ckb01-oem/adb-control.sh", "usr/share/ckb01-oem/adb-tcp-property.so",
-                         "usr/share/ckb01-oem/adb-payload.json", "usr/share/ckb01-oem/runtime-provenance.json"]
+                         "usr/share/ckb01-oem/adb-payload.json", "usr/share/ckb01-oem/runtime-provenance.json",
+                         "usr/sbin/ckb01-diag-efs", "usr/libexec/ckb01-diag-reader",
+                         "usr/lib/ckb01-oem/diag-route-control.sh", "etc/init.d/ckb01-diag-route",
+                         "etc/rc.d/S97ckb01-diag-route", "etc/rc.d/K10ckb01-diag-route"]
+            if missing_diag:
+                oem_paths.remove("usr/libexec/ckb01-diag-reader")
             paths += oem_paths
             contents.update({name: b"OEM fixture" for name in oem_paths})
+            for installed, source in [("usr/sbin/ckb01-diag-efs", "ckb01-diag-efs"),
+                                      ("usr/lib/ckb01-oem/diag-route-control.sh", "diag-route-control.sh"),
+                                      ("etc/init.d/ckb01-diag-route", "ckb01-diag-route-init")]:
+                contents[installed] = (oem / "files" / source).read_bytes()
             contents["usr/share/ckb01-oem/adb-tcp-property.so"] = (oem / "payload/adb-tcp-property.so").read_bytes()
             with tarfile.open(oem / "vendor/runtime.tar.gz") as runtime:
                 for entry in runtime.getmembers():
@@ -202,6 +211,12 @@ class Ckb01FitTests(unittest.TestCase):
                                *(["--wireless"] if wireless else []),
                                *(["--modem"] if modem else [])],
                               text=True, capture_output=True)
+
+    def test_modem_package_requires_actual_diag_reader(self):
+        self.make_fit(modem=True, missing_diag=True)
+        r=self.package(modem=True)
+        self.assertNotEqual(r.returncode,0)
+        self.assertIn("usr/libexec/ckb01-diag-reader",r.stderr)
 
     def test_rejects_internal_dwc_msi_for_ckb01(self):
         self.make_fit(dwc_msi=True)

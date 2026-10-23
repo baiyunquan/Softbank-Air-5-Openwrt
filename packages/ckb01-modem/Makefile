@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 include $(TOPDIR)/rules.mk
 PKG_NAME:=ckb01-modem
-PKG_RELEASE:=5
+PKG_RELEASE:=6
 PKG_LICENSE:=GPL-2.0-only
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 PKG_BUILD_DEPENDS:=libqmi libqrtr-glib libjson-c

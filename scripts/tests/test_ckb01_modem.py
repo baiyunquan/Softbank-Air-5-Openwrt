@@ -119,6 +119,16 @@ class ModemFixtures(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);self.fixture(root);d=self.discover(root)
             self.assertTrue(d['ok']);self.assertEqual(d['control'],'/dev/wwan7qmi2');self.assertEqual(d['data'],'mhi_hwip5');self.assertEqual(d['management'],'mhi_swip7')
+    def test_diag_follows_pci_parent_and_arbitrary_wwan_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);self.fixture(root)
+            pci=root/'bus/pci/devices/0000:01:00.0'
+            target=pci/'mhi0/wwan/wwan7/wwan7qcdm4';target.mkdir(parents=True)
+            (root/'class/wwan/wwan7qcdm4').symlink_to(target)
+            foreign=root/'bus/pci/devices/0000:02:00.0/wwan9qcdm0';foreign.mkdir(parents=True)
+            (root/'class/wwan/wwan9qcdm0').symlink_to(foreign)
+            self.assertEqual(self.discover(root).get('diag'),'/dev/wwan7qcdm4')
+
     def test_wrong_board_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);self.fixture(root,board='tplink,deco-x80-5g');self.assertFalse(self.discover(root)['ok'])

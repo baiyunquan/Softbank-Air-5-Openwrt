@@ -1,0 +1,135 @@
+#!/bin/sh
+# IPQ-side DIAG owner and read-only EFS client. Existing ckb01-diag remains
+# the passive diagnostics collector.
+. /lib/functions/ckb01-oem.sh
+umask 077
+controller=/usr/lib/ckb01-oem/diag-route-control.sh
+remote=/tmp/ckb01-diag-route-control.sh
+reader=/usr/libexec/ckb01-diag-reader
+state=/tmp/ckb01-diag-efs.status
+disabled=/tmp/ckb01-diag-efs.disabled
+stopping=/tmp/ckb01-diag-efs.stopping
+lock=/var/lock/ckb01-diag-efs.lock
+usage() {
+ echo 'Usage: ckb01-diag-efs enable|disable|status|hello|probe|ls PATH|stat PATH|readlink PATH|pull PATH LOCAL|backup PATH LOCAL'
+ echo 'Boot enables PCIe DIAG automatically. disable restores USB for this boot.'
+}
+unlock() {
+ [ "$(cat "$lock/pid" 2>/dev/null)" = "$$" ] || return 0
+ rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null || :
+}
+take_lock() {
+ mkdir -p /var/lock
+ if ! mkdir "$lock" 2>/dev/null; then
+  owner=$(cat "$lock/pid" 2>/dev/null)
+  case "$owner" in ''|*[!0-9]*) return 75;; esac
+  kill -0 "$owner" 2>/dev/null && return 75
+  rm -f "$lock/pid"; rmdir "$lock" && mkdir "$lock" || return 75
+ fi
+ echo "$$" >"$lock/pid"
+ trap unlock EXIT
+ trap 'exit 130' INT
+ trap 'exit 143' HUP TERM
+}
+discover_diag() {
+ ckb01_oem_guard || return $?
+ info=$(ckb01-modem discover) || return $?
+ device=$(printf '%s' "$info" | jsonfilter -e '@.diag')
+ # Permit installing this package onto an older running manager while still
+ # checking the PCI identity through its existing discover result.
+ if [ -z "$device" ]; then
+  pci=$(printf '%s' "$info" | jsonfilter -e '@.pci')
+  [ -n "$pci" ] || return 69
+  for port in /sys/class/wwan/*qcdm*; do
+   target=$(readlink -f "$port")
+   case "$target" in "$pci"/*) device=/dev/${port##*/}; break;; esac
+  done
+ fi
+ case "$device" in /dev/wwan*qcdm*) ;; *) ckb01_oem_error 'verified SDX55 DIAG port is unavailable'; return 69;; esac
+ [ -c "$device" ] || return 69
+}
+module_control() {
+ action=$1
+ hash=$(sha256sum "$controller"); hash=${hash%% *}
+ CKB01_OEM_TIMEOUT=8 ckb01-oem exec "[ -r '$remote' ] && [ \"\$(sha256sum '$remote' | cut -d' ' -f1)\" = '$hash' ] || exit 66; /bin/sh '$remote' '$action'"
+}
+put_controller() {
+ CKB01_OEM_TIMEOUT=8 ckb01-oem push "$controller" "$remote.next" || return $?
+ CKB01_OEM_TIMEOUT=8 ckb01-oem exec "mv -f '$remote.next' '$remote'"
+}
+start_route() {
+ discover_diag || return $?
+ result=$(module_control start); rc=$?
+ if [ "$rc" = 66 ]; then
+  put_controller || return $?
+  result=$(module_control start); rc=$?
+ fi
+ [ "$rc" = 0 ] || { echo unavailable >"$state"; return "$rc"; }
+ # A live routing process alone is not proof of DIAG connectivity.
+ "$CKB01_TIMEOUT" -k 1 7 "$reader" -t hdlc -d "$device" --timeout 3 hello || {
+  echo hello-failed >"$state"; return 1;
+ }
+ printf 'ready device=%s %s\n' "$device" "$result" >"$state"
+ cat "$state"
+}
+stop_route() {
+ module_control stop
+ rc=$?
+ if [ "$rc" = 66 ]; then
+  # A package upgrade can leave a valid old owner in module RAM. Install the
+  # current controller before stopping it rather than report a false stop.
+  put_controller || return $?
+  module_control stop
+  rc=$?
+ fi
+ printf 'disabled stop_rc=%s\n' "$rc" >"$state"
+ return "$rc"
+}
+command=${1:-status}; [ "$#" = 0 ] || shift
+case "$command" in help|-h|--help) usage; exit 0;; esac
+case "$command:$#" in
+ enable:0|disable:0|status:0|hello:0|probe:0|_stop:0|_step:0|daemon:0) ;;
+ ls:1|stat:1|readlink:1|pull:2|backup:2) ;;
+ *) usage >&2; exit 64;;
+esac
+ckb01_oem_guard || exit $?
+if [ "$command" = daemon ]; then
+ trap 'exit 0' INT TERM
+ while :; do
+  if [ ! -e "$disabled" ] && [ ! -e "$stopping" ]; then
+   "$0" _step >/tmp/ckb01-diag-efs.last 2>&1 || logger -t ckb01-diag-efs 'DIAG not ready; retry in 30s (no MHI reset)'
+  fi
+  sleep 30 & wait "$!"
+ done
+fi
+if [ "$command" = _stop ]; then
+ # A step that passed its stopping check can still hold the lock while
+ # starting the OEM owner. Wait for it, then stop that owner under the lock.
+ tries=0
+ while :; do
+  take_lock && break
+  rc=$?
+  [ "$rc" = 75 ] && [ "$tries" -lt 30 ] || exit "$rc"
+  tries=$((tries+1))
+  sleep 1
+ done
+else
+ take_lock || exit $?
+fi
+case "$command" in
+ status)
+  cat "$state" 2>/dev/null || echo not-initialized
+  module_control status
+  ;;
+ disable) touch "$disabled"; stop_route ;;
+ _stop) stop_route ;;
+ enable) rm -f "$disabled" "$stopping"; start_route ;;
+ _step) [ ! -e "$disabled" ] && [ ! -e "$stopping" ] || exit 0; start_route ;;
+ hello|probe|ls|stat|readlink|pull|backup)
+  # Preserve exact argument boundaries; never interpolate EFS paths into an
+  # OEM command string. The reader accepts only its read-only command set.
+  [ ! -e "$disabled" ] || { echo 'DIAG disabled; use enable first' >&2; exit 69; }
+  start_route || exit $?
+  "$reader" -t hdlc -d "$device" --timeout 5 "$command" "$@"
+  ;;
+esac

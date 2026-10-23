@@ -38,6 +38,9 @@ OEM_FILES = (
     "usr/sbin/ckb01-oem", "usr/sbin/ckb01-adb", "lib/functions/ckb01-oem.sh",
     "usr/lib/ckb01-oem/adb-control.sh", "usr/share/ckb01-oem/adb-tcp-property.so",
     "usr/share/ckb01-oem/adb-payload.json", "usr/share/ckb01-oem/runtime-provenance.json",
+    "usr/sbin/ckb01-diag-efs", "usr/libexec/ckb01-diag-reader",
+    "usr/lib/ckb01-oem/diag-route-control.sh", "etc/init.d/ckb01-diag-route",
+    "etc/rc.d/S97ckb01-diag-route", "etc/rc.d/K10ckb01-diag-route",
 )
 
 
@@ -89,6 +92,11 @@ def archive_entries(data):
 def verify_oem_runtime(entries):
     for name in OEM_FILES:
         require(bool(entries.get(name)), f"OEM management initramfs is missing {name}")
+    for installed, source in (("usr/sbin/ckb01-diag-efs", "ckb01-diag-efs"),
+                              ("usr/lib/ckb01-oem/diag-route-control.sh", "diag-route-control.sh"),
+                              ("etc/init.d/ckb01-diag-route", "ckb01-diag-route-init")):
+        require(entries[installed] == (OEM_PACKAGE / "files" / source).read_bytes(),
+                f"OEM DIAG initramfs has stale or changed {installed}")
     record = json.loads((OEM_PACKAGE / "vendor/provenance.json").read_text())
     for name, metadata in record["files"].items():
         installed = "usr/lib/ckb01-oem/runtime/" + name

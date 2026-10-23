@@ -56,7 +56,7 @@ json_object *discover_at(const char *sysfs) {
     return failure("expected exactly one CKB01 SDX55 PCI device");
   }
   json_object_object_add(o, "pci", json_object_new_string(root));
-  const char *patterns[] = {"class/wwan/*qmi*", "class/net/*"};
+  const char *patterns[] = {"class/wwan/*", "class/net/*"};
   for (unsigned t = 0; t < 2; t++) {
     glob_t g = {0};
     path = g_build_filename(sysfs, patterns[t], NULL);
@@ -72,6 +72,8 @@ json_object *discover_at(const char *sysfs) {
       if (!t && (strstr(target, "_QMI/") ||
                  (!strstr(target, "_QMI1/") && strstr(name, "qmi0"))))
         key = "control";
+      if (!t && strstr(name, "qcdm"))
+        key = "diag";
       if (t && strstr(target, "_IP_SW0/"))
         key = "management";
       if (t && strstr(target, "_IP_HW0/"))

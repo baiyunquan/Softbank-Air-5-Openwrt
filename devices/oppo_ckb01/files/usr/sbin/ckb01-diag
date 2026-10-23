@@ -22,6 +22,7 @@ capture pci lspci -nnk
 capture modem-discovery ckb01-modem discover
 capture mhi-diagnostics ckb01-mhi-debug snapshot "$work/mhi-snapshot"
 capture oem-management ckb01-oem status
+capture diag-route-local sh -c 'cat /tmp/ckb01-diag-efs.status /tmp/ckb01-diag-efs.last; ls -l /sys/class/wwan/*qcdm*'
 # Keep module ADB inspection opt-in: diagnostic collection never enables it.
 capture oem-adb-local sh -c 'command -v adb; ls -l /usr/bin/oatprsync /usr/sbin/ckb01-oem /usr/sbin/ckb01-adb; cat /usr/share/ckb01-oem/adb-payload.json'
 capture modem-transport /usr/libexec/timeout-coreutils -k 2 40 ckb01-modem probe --transport-only

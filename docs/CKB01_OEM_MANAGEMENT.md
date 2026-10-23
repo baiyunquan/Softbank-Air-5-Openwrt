@@ -142,3 +142,7 @@ python3 scripts/ckb01-oem-bundle.py --overlay /path/to/ckb01-oem-management-over
 ## 验收边界
 
 属性库此前已在本机SDX55上获得TCP ADB ARMv7 root shell；该记录证明payload的可行性。新增的固件包、命令输出包装及完整启用/恢复流程仍需在包含本改动的新OpenWrt实机启动后验收，不能把先前的临时实验当成新版固件已经通过。CI会检查实际initramfs内容和不可变运行库哈希，失败只警告并继续上传原始ITB/可用IMG/日志。
+
+## PCIe DIAG 与 EFS
+
+新增 `ckb01-diag-efs`，默认由 S97 服务开启模块原厂 PCIe 路由；支持 `status`、`enable`、`disable` 以及只读 EFS `ls/stat/pull/backup`。具体命令、退出恢复和实测记录见 [DIAG/EFS 文档](CKB01_DIAG_EFS.md)。原有 `ckb01-diag` 仍是被动采集入口，不会因此开启 DIAG。
