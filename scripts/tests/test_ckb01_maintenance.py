@@ -22,6 +22,10 @@ class Maintenance(unittest.TestCase):
   script=(ROOT/'packages/ckb01-edl/files/ckb01-edl').read_text().split(' backup-efs)')[1]
   self.assertNotIn('echo arm',script)
   self.assertNotIn('trigger_edl',script)
+ def test_diag_fd_remains_open_through_attach(self):
+  text=(ROOT/"packages/ckb01-edl/files/ckb01-edl").read_text()
+  self.assertLess(text.index('exec 3<>'), text.index('echo arm'))
+  self.assertLess(text.index('echo attach'), text.index('exec 3>&-'))
  def test_payload_checker_accepts_actual_files_rejects_missing(self):
   spec=importlib.util.spec_from_file_location('maintenance',ROOT/'scripts/ckb01-maintenance-check.py')
   m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)

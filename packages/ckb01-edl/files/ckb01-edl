@@ -76,10 +76,12 @@ case "$cmd" in
   done
   echo $$ >/var/lock/ckb01-diag-efs.lock/pid
   trap 'rm -f /var/lock/ckb01-diag-efs.lock/pid; rmdir /var/lock/ckb01-diag-efs.lock /var/lock/ckb01-edl.lock 2>/dev/null || :' EXIT
+  # Hold the WWAN file open through attach; write() only queues MHI TX.
+  if [ "$already" = 0 ] && [ "$method" = diag ]; then exec 3<>"$diag"; fi
   echo arm >"$control"
   if [ "$already" = 0 ]; then
    if [ "$method" = diag ]; then
-    /usr/libexec/timeout-coreutils -k 1 5 sh -c 'printf "\113\145\001\000\124\017\176" >"$1"' sh "$diag"
+    /usr/libexec/timeout-coreutils -k 1 5 sh -c 'printf "\113\145\001\000\124\017\176" >&3'
    else
     trigger=
     for t in "$pci"/mhi*/trigger_edl; do [ ! -w "$t" ] || trigger=$t; done
@@ -88,6 +90,7 @@ case "$cmd" in
    fi
   fi
   echo attach >"$control"
+  exec 3>&-
   cat "$control"
   grep -q 'state=FP' "$control" && port firehose || fail 'FP/Firehose not ready; retained logs; no retry or reset'
   ;;

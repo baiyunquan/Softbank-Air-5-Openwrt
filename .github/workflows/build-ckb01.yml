@@ -415,6 +415,7 @@ jobs:
         if: inputs.maintenance && steps.compile.outcome == 'success'
         continue-on-error: true
         run: |
+          set -uo pipefail
           if ! python3 builder/scripts/ckb01-maintenance-check.py --openwrt openwrt --artifacts artifacts 2>&1 | tee logs/maintenance-validation.log; then
             echo '::warning title=CKB01 maintenance validation::Maintenance payload checks failed; raw ITB/IMG/log uploads continue.'
           fi
