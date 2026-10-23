@@ -20,6 +20,7 @@ ckb01_oem_discover() {
  [ -n "$ckb01_oem_management" ]
 }
 ckb01_oem_network() {
+ [ ! -e /tmp/ckb01-edl-active ] || { ckb01_oem_error "EDL maintenance owns the module"; return 75; }
  ckb01_oem_guard || return $?
  if ! ckb01_oem_discover; then
   ckb01_oem_error 'SDX55 IP_SW0 is unavailable; inspect ckb01-modem discover and MHI logs (no reset attempted)'

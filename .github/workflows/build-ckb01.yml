@@ -2,6 +2,11 @@ name: Build CKB01 USB initramfs
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      maintenance:
+        type: boolean
+        default: false
   push:
     branches: [main, ckb01-usb-bringup, ckb01-ath11k-bringup, ckb01-usb-default-packaging]
     paths:
@@ -39,6 +44,8 @@ env:
   DEVICE: oppo_ckb01
   VARIANT: ckb01
   PYTHONDONTWRITEBYTECODE: '1'
+  CONFIG_FRAGMENT: ${{ inputs.maintenance && 'devices/oppo_ckb01/maintenance.config' || '' }}
+  IMAGE_FLAVOR: ${{ inputs.maintenance && 'maintenance' || 'router' }}
 
 jobs:
   build:
@@ -60,7 +67,7 @@ jobs:
             build-essential bison flex gawk gettext git glibc-source \
             libncurses-dev libssl-dev python3 rsync swig unzip wget \
             zlib1g-dev zstd u-boot-tools device-tree-compiler cpio file bsdextrautils \
-            dosfstools mtools fdisk e2fsprogs fakeroot clang lld pkg-config libqmi-glib-dev libqrtr-glib-dev libjson-c-dev
+            dosfstools mtools fdisk e2fsprogs fakeroot clang lld pkg-config libqmi-glib-dev libqrtr-glib-dev libjson-c-dev libxml2-dev
           mkdir -p logs artifacts
           df -h .
 
@@ -404,11 +411,25 @@ jobs:
           echo '::warning title=CKB01 USB packaging step::The USB image step encountered an unexpected error; available ITB and metadata will still be uploaded.'
           echo '- USB packaging step had an unexpected error; available ITB and metadata upload is still enabled.' >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Validate maintenance payloads
+        if: inputs.maintenance && steps.compile.outcome == 'success'
+        continue-on-error: true
+        run: |
+          if ! python3 builder/scripts/ckb01-maintenance-check.py --openwrt openwrt --artifacts artifacts 2>&1 | tee logs/maintenance-validation.log; then
+            echo '::warning title=CKB01 maintenance validation::Maintenance payload checks failed; raw ITB/IMG/log uploads continue.'
+          fi
+          cp builder/packages/ckb01-edl/firmware/provenance.json artifacts/edl-programmer.json
+          cp builder/docs/CKB01_MAINTENANCE.md artifacts/
+          find openwrt/bin -type f -name 'ckb01-edl*.apk' -exec cp {} artifacts/ \;
+          printf '{"image_flavor":"maintenance","hardware_acceptance":"pending"}\n' > artifacts/maintenance-status.json
+          (cd artifacts && find . -maxdepth 1 -type f ! -name sha256sums -print0 | sort -z | xargs -0 sha256sum) > logs/artifact-sha256sums
+          cp logs/artifact-sha256sums artifacts/sha256sums
+
       - name: Upload CKB01 USB image and metadata
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ckb01-usb-image-${{ github.sha }}
+          name: ckb01-${{ env.IMAGE_FLAVOR }}-image-${{ github.sha }}
           path: artifacts/
           if-no-files-found: warn
           retention-days: 30

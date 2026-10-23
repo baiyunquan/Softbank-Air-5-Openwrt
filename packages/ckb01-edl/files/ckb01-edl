@@ -1,0 +1,117 @@
+#!/bin/sh
+# Explicit maintenance controller. Never invoked automatically at boot.
+set -eu
+umask 077
+. /lib/functions/ckb01-oem.sh
+usage() { echo 'ckb01-edl status | enter [--method diag|mhi] | backup-efs [--output DIR]'; }
+fail() { echo "ckb01-edl: $*" >&2; exit 1; }
+ckb01_oem_guard
+[ -f /etc/ckb01-maintenance ] || fail 'maintenance image required'
+pci=
+for p in /sys/bus/pci/devices/*; do
+ [ "$(cat "$p/vendor" 2>/dev/null)" = 0x17cb ] || continue
+ [ "$(cat "$p/device" 2>/dev/null)" = 0x0306 ] || continue
+ [ "$(cat "$p/subsystem_vendor" 2>/dev/null)" = 0x17cb ] || continue
+ [ "$(cat "$p/subsystem_device" 2>/dev/null)" = 0x010c ] || continue
+ [ -z "$pci" ] || fail 'multiple matching endpoints'
+ pci=$p
+done
+[ -n "$pci" ] || fail 'CKB01 SDX55 PCI endpoint absent'
+control=$pci/ckb01_edl
+[ -r "$control" ] || fail 'maintenance kernel interface absent'
+port() {
+ result=
+ for p in /sys/class/wwan/*"$1"*; do
+  case "$(readlink -f "$p")" in "$(readlink -f "$pci")"/*)
+   [ -z "$result" ] || fail 'ambiguous WWAN port'
+   result=/dev/${p##*/};;
+  esac
+ done
+ [ -n "$result" ] && [ -c "$result" ]
+}
+cmd=${1:-status}; [ "$#" -eq 0 ] || shift
+if [ "$cmd" = status ]; then
+ [ "$#" -eq 0 ] || { usage; exit 64; }
+ echo "pci=${pci##*/}"
+ cat "$control"
+ cat /usr/share/ckb01-edl/provenance.json
+ exit 0
+fi
+mkdir -p /var/lock
+mkdir /var/lock/ckb01-edl.lock 2>/dev/null || fail 'maintenance operation already running; inspect lock before removing it'
+trap 'rmdir /var/lock/ckb01-edl.lock 2>/dev/null || :' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+loader=/lib/firmware/qcom/ckb01/prog_firehose_sdx55.mbn
+[ "$(sha256sum "$loader" | cut -d' ' -f1)" = d46bc860c73c0a09bbb72b70da8ea0b1a33000dca4189fba7bfb09deedac7070 ] || fail 'programmer digest mismatch'
+case "$cmd" in
+ enter)
+  method=diag
+  if [ "$#" -ne 0 ]; then
+   [ "$#" -eq 2 ] && [ "$1" = --method ] || { usage; exit 64; }
+   method=$2
+  fi
+  case "$method" in diag|mhi) ;; *) usage; exit 64;; esac
+  if grep -q 'state=FP' "$control" && port firehose; then cat "$control"; exit 0; fi
+  # A fresh image can retain an endpoint already in EDL; do not send DIAG there.
+  state=$(cat "$control")
+  case "$state" in *ee=EDL*|*ee=6*|*ee=FP*|*ee=7*) already=1;; *) already=0;; esac
+  if [ "$already" = 0 ] && [ "$method" = diag ]; then
+   ckb01-diag-efs enable
+   ckb01-diag-efs hello
+   port qcdm || fail 'DIAG port unavailable'
+   diag=$result
+  fi
+  adb disconnect 169.254.10.2:5555 >/dev/null 2>&1 || :
+  : >/tmp/ckb01-edl-active
+  ifdown cellular || :
+  /etc/init.d/ckb01-modem stop || :
+  # stop_service observes the interlock, leaving the remote DIAG owner alive.
+  /etc/init.d/ckb01-diag-route stop || :
+  # Serialize against an in-flight reader. Retain the lock through the trigger.
+  tries=0
+  until mkdir /var/lock/ckb01-diag-efs.lock 2>/dev/null; do
+   tries=$((tries+1)); [ "$tries" -lt 20 ] || fail 'DIAG operation did not quiesce'
+   sleep 1
+  done
+  echo $$ >/var/lock/ckb01-diag-efs.lock/pid
+  trap 'rm -f /var/lock/ckb01-diag-efs.lock/pid; rmdir /var/lock/ckb01-diag-efs.lock /var/lock/ckb01-edl.lock 2>/dev/null || :' EXIT
+  echo arm >"$control"
+  if [ "$already" = 0 ]; then
+   if [ "$method" = diag ]; then
+    /usr/libexec/timeout-coreutils -k 1 5 sh -c 'printf "\113\145\001\000\124\017\176" >"$1"' sh "$diag"
+   else
+    trigger=
+    for t in "$pci"/mhi*/trigger_edl; do [ ! -w "$t" ] || trigger=$t; done
+    [ -n "$trigger" ] || fail 'MHI trigger interface unavailable'
+    echo 1 >"$trigger"
+   fi
+  fi
+  echo attach >"$control"
+  cat "$control"
+  grep -q 'state=FP' "$control" && port firehose || fail 'FP/Firehose not ready; retained logs; no retry or reset'
+  ;;
+ backup-efs)
+  out=
+  if [ "$#" -ne 0 ]; then
+   [ "$#" -eq 2 ] && [ "$1" = --output ] || { usage; exit 64; }
+   out=$2
+  fi
+  [ -n "$out" ] || out=/root/efs-backups
+  mkdir -p "$out"
+  # Reject RAM fallback, tmpfs, and read-only boot media as backup destinations.
+  filesystem=$(stat -f -c %T "$out")
+  case "$filesystem" in tmpfs|ramfs|rootfs) fail 'choose a persistent output mount';; esac
+  grep -q 'state=FP' "$control" && port firehose || fail 'run enter first; backup never triggers EDL'
+  run=$(mktemp -d "$out/efs-XXXXXXXX")
+  cp /usr/share/ckb01-edl/provenance.json "$run/programmer.json"
+  cat "$control" >"$run/kernel-state.txt"
+  dmesg >"$run/kernel-before.log"
+  rc=0
+  /usr/libexec/ckb01-firehose-read --device "$result" --output "$run" >"$run/reader.stdout" 2>"$run/reader.stderr" || rc=$?
+  dmesg >"$run/kernel-after.log"
+  echo "backup_directory=$run exit_code=$rc"
+  exit "$rc"
+  ;;
+ *) usage; exit 64;;
+esac

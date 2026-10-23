@@ -1,0 +1,9 @@
+{
+  "file": "prog_firehose_sdx55.mbn",
+  "size": 275328,
+  "sha256": "d46bc860c73c0a09bbb72b70da8ea0b1a33000dca4189fba7bfb09deedac7070",
+  "source": "Local T99W175_Recovery/loader/prog_firehose_sdx55.mbn",
+  "identical_public_source": "https://github.com/bkerler/Loaders/blob/6c416255056a178f54ccd7ee9b67d04a5bdfa8e6/quectel/prog_firehose_sdx55_rg502.mbn",
+  "hardware_acceptance": "pending: authentication, PCIe FP and NAND read not tested",
+  "client_source": "https://github.com/iamromulan/qfenix/tree/318a49cee9663a6a79fbcc8b44db8a3d2afdec2b"
+}

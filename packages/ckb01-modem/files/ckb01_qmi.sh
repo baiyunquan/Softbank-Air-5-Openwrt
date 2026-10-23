@@ -14,6 +14,11 @@ proto_ckb01_qmi_init_config() {
 }
 proto_ckb01_qmi_setup() {
  local interface="$1" apn endpoint metric
+ if [ -f /etc/ckb01-maintenance ] || [ -e /tmp/ckb01-edl-active ]; then
+  proto_notify_error "$interface" MAINTENANCE_MODE
+  proto_block_restart "$interface"
+  return 1
+ fi
  json_get_vars apn endpoint metric
  [ -n "$apn" ] || apn=3gnet
  local gate="${CKB01_MODEM_STATE_DIR:-/tmp}/ckb01-modem-ready.json" key

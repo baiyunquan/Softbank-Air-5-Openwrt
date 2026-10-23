@@ -37,6 +37,22 @@ management_probe() {
  [ -s "$state/ckb01-modem-rpc.txt" ] || rc=1
  printf '%s\n' "$rc" >"$state/ckb01-modem-management.rc"
 }
+# Maintenance boots configure only IP_SW0, retaining the independent heartbeat.
+# Do not query QMI/QRTR or launch cellular in this image.
+if [ -f /etc/ckb01-maintenance ] && [ "${1:-}" != --worker ]; then
+ started=$(cut -d. -f1 /proc/uptime)
+ while remaining; do
+  [ ! -e /tmp/ckb01-edl-active ] || exit 0
+  discovery=$(ckb01-modem discover 2>/dev/null) || :
+  management=$(printf '%s' "$discovery" | jsonfilter -e '@.management' 2>/dev/null)
+  if [ -n "$management" ]; then
+   "$limiter" -k 1 10 ip link set dev "$management" up &&
+    ip addr replace 169.254.10.1/24 dev "$management" && exit 0
+  fi
+  sleep 1
+ done
+ exit 1
+fi
 # The complete worker, including ndo_open and all RPC descendants, runs under
 # one GNU timeout process group. No unbounded ip command lives in the supervisor.
 if [ "${1:-}" = --worker ]; then

@@ -14,5 +14,6 @@ start_service() {
 }
 stop_service() {
  touch /tmp/ckb01-diag-efs.stopping
+ [ ! -e /tmp/ckb01-edl-active ] || return 0
  /usr/sbin/ckb01-diag-efs _stop || logger -t ckb01-diag-efs 'Could not stop module DIAG owner; inspect management link (no reset attempted)'
 }

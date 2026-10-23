@@ -96,7 +96,7 @@ ckb01_oem_guard || exit $?
 if [ "$command" = daemon ]; then
  trap 'exit 0' INT TERM
  while :; do
-  if [ ! -e "$disabled" ] && [ ! -e "$stopping" ]; then
+  if [ ! -e "$disabled" ] && [ ! -e "$stopping" ] && [ ! -e /tmp/ckb01-edl-active ]; then
    "$0" _step >/tmp/ckb01-diag-efs.last 2>&1 || logger -t ckb01-diag-efs 'DIAG not ready; retry in 30s (no MHI reset)'
   fi
   sleep 30 & wait "$!"
@@ -123,11 +123,12 @@ case "$command" in
   ;;
  disable) touch "$disabled"; stop_route ;;
  _stop) stop_route ;;
- enable) rm -f "$disabled" "$stopping"; start_route ;;
- _step) [ ! -e "$disabled" ] && [ ! -e "$stopping" ] || exit 0; start_route ;;
+ enable) [ ! -e /tmp/ckb01-edl-active ] || exit 75; rm -f "$disabled" "$stopping"; start_route ;;
+ _step) [ ! -e /tmp/ckb01-edl-active ] && [ ! -e "$disabled" ] && [ ! -e "$stopping" ] || exit 0; start_route ;;
  hello|probe|ls|stat|readlink|pull|backup)
   # Preserve exact argument boundaries; never interpolate EFS paths into an
   # OEM command string. The reader accepts only its read-only command set.
+  [ ! -e /tmp/ckb01-edl-active ] || exit 75
   [ ! -e "$disabled" ] || { echo 'DIAG disabled; use enable first' >&2; exit 69; }
   start_route || exit $?
   "$reader" -t hdlc -d "$device" --timeout 5 "$command" "$@"
