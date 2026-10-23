@@ -10,7 +10,7 @@ new file mode 100644
 index 0000000..4930994
 --- /dev/null
 +++ b/target/linux/qualcommax/dts/ipq8072-ckb01.dts
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,224 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
 +
 +/dts-v1/;
@@ -201,8 +201,18 @@ index 0000000..4930994
 +	status = "okay";
 +};
 +
++/* OEM IPA MSI writes require the SoC GICv2m path, not DWC MSI capture.
++ * Keep this override local to CKB01; the frame already exists in the SoC DTS.
++ */
++&intc {
++	ckb01_msi: v2m@0 {
++		#msi-cells = <0>;
++	};
++};
++
 +&pcie0 {
 +	status = "okay";
++	msi-parent = <&ckb01_msi>;
 +	pinctrl-0 = <&pcie0_default_state>;
 +	pinctrl-names = "default";
 +	perst-gpio = <&tlmm 58 GPIO_ACTIVE_LOW>;

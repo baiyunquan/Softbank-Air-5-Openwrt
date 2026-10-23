@@ -157,6 +157,15 @@ def verify_board(dtb, wireless=False):
     require(prop(dtb, "/", "qcom,board-id", "x") == [8, 0], "unexpected CKB01 board ID")
     require(prop(dtb, "/memory@40000000", "reg", "x") == [0, 0x40000000, 0, 0x20000000],
             "CKB01 DT does not describe 512 MiB RAM")
+    frame = "/soc/interrupt-controller@b000000/v2m@0"
+    try:
+        require(prop(dtb, frame, "compatible") == "arm,gic-v2m-frame",
+                "CKB01 MSI parent must be GICv2m")
+        require(prop(dtb, "/soc/pcie@20000000", "msi-parent", "x") ==
+                prop(dtb, frame, "phandle", "x"),
+                "CKB01 PCIe must route MSI to GICv2m")
+    except ValueError as error:
+        raise ValueError("CKB01 PCIe is missing the verified GICv2m MSI route") from error
     for port, label, address in ((1, "wan", 8), (2, "lan", 9)):
         node = f"/soc/ppe@3a000000/ports/port@{port}"
         phy = f"/soc/mdio@90000/ethernet-phy-package@8/ethernet-phy@{address:x}"

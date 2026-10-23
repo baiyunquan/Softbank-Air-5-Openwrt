@@ -60,7 +60,7 @@ class Ckb01FitTests(unittest.TestCase):
 
     def make_fit(self, *, board="oppo,ckb01", missing_module=False,
                  oversized=False, swapped_phy=False, wireless=False, bad_bdf=False, missing_segment=False,
-                 compressed_initramfs=False, modem=False, stale_bootstrap=False):
+                 compressed_initramfs=False, modem=False, stale_bootstrap=False, dwc_msi=False):
         paths = [name for name in REQUIRED if not (missing_module and name.endswith("mhi_wwan_ctrl.ko"))]
         contents = {}
         if wireless:
@@ -135,8 +135,14 @@ class Ckb01FitTests(unittest.TestCase):
         q6-etr@4e700000 {{ reg = <0 0x4e700000 0 0x100000>; no-map; }};
         m3@4e800000 {{ reg = <0 0x4e800000 0 0x100000>; no-map; }};
     }};
-    soc {{
+    soc@0 {{
         #address-cells = <1>; #size-cells = <1>; ranges;
+        interrupt-controller@b000000 {{
+            #address-cells = <1>; #size-cells = <1>;
+            ranges = <0 0xb00a000 0xffd>;
+            msi: v2m@0 {{ compatible = "arm,gic-v2m-frame"; reg = <0 0xffd>; msi-controller; #msi-cells = <0>; }};
+        }};
+        pcie@20000000 {{ {'msi-parent = <&msi>;' if not dwc_msi else ''} }};
         wifi@c0000000 {{
             compatible = "qcom,ipq8074-wifi"; reg = <0xc000000 0x2000000>;
             status = "{'okay' if wireless else 'disabled'}";
@@ -196,6 +202,12 @@ class Ckb01FitTests(unittest.TestCase):
                                *(["--wireless"] if wireless else []),
                                *(["--modem"] if modem else [])],
                               text=True, capture_output=True)
+
+    def test_rejects_internal_dwc_msi_for_ckb01(self):
+        self.make_fit(dwc_msi=True)
+        result = self.package()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("GICv2m", result.stderr)
 
     def test_valid_image_has_identical_usb_alias_and_boot_configurations(self):
         self.make_fit()
