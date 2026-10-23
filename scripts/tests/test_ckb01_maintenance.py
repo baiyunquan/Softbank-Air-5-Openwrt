@@ -44,6 +44,10 @@ class Maintenance(unittest.TestCase):
   entries['lib/modules/test/mhi_pci_generic.ko']=b'\x7fELFold-driver'
   with self.assertRaisesRegex(ValueError, 'kernel'):
    m.check(entries,'fixture')
+ def test_wifi_deadline_uses_installed_gnu_timeout(self):
+  service=(ROOT/'devices/oppo_ckb01/files/etc/init.d/ckb01-wifi').read_text()
+  self.assertIn('/usr/libexec/timeout-coreutils -k 1 120', service)
+  self.assertNotIn('/bin/busybox timeout', service)
  def test_workflow_separate_trigger_and_raw_upload(self):
   child=(ROOT/'.github/workflows/build-ckb01-maintenance.yml').read_text()
   self.assertIn('branches: [ckb01-pcie-edl]',child)
