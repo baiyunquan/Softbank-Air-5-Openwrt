@@ -1,0 +1,751 @@
+--- /dev/null
++++ b/target/linux/qualcommax/patches-6.18/953-ckb01-pcie-edl-trace.patch
+@@ -0,0 +1,748 @@
++--- a/drivers/bus/mhi/host/boot.c
+++++ b/drivers/bus/mhi/host/boot.c
++@@ -282,6 +282,7 @@
++ 		goto invalid_pm_state;
++ 	}
++ 
+++	mhi_ckb01_edl_trace(mhi_cntrl, "bhi-submit", "begin", 0, mhi_buf->dma_addr, mhi_buf->len);
++ 	session_id = MHI_RANDOM_U32_NONZERO(BHI_TXDB_SEQNUM_BMSK);
++ 	dev_dbg(dev, "Starting image download via BHI. Session ID: %u\n",
++ 		session_id);
++@@ -291,16 +292,22 @@
++ 	mhi_write_reg(mhi_cntrl, base, BHI_IMGSIZE, mhi_buf->len);
++ 	mhi_write_reg(mhi_cntrl, base, BHI_IMGTXDB, session_id);
++ 	read_unlock_bh(pm_lock);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "bhi-submit", "end", 0, session_id, 0);
++ 
++ 	/* Wait for the image download to complete */
+++	mhi_ckb01_edl_trace(mhi_cntrl, "bhi-wait", "begin", 0, mhi_buf->len, mhi_cntrl->timeout_ms);
++ 	ret = wait_event_timeout(mhi_cntrl->state_event,
++ 			   MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state) ||
++ 			   (read_error = mhi_read_reg_field(mhi_cntrl, base, BHI_STATUS,
++ 					      BHI_STATUS_MASK, &tx_status)) || tx_status,
++ 			   msecs_to_jiffies(mhi_cntrl->timeout_ms));
++-	if (mhi_cntrl->ckb01_edl_active)
++-		return mhi_ckb01_bhi_result(ret, read_error, tx_status,
+++	if (mhi_cntrl->ckb01_edl_active) {
+++		int result = mhi_ckb01_bhi_result(ret, read_error, tx_status,
++ 			MHI_PM_IN_ERROR_STATE(READ_ONCE(mhi_cntrl->pm_state)));
+++
+++		mhi_ckb01_edl_trace(mhi_cntrl, "bhi-wait", "end", result, tx_status, ret);
+++		return result;
+++	}
++ 	if (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state))
++ 		goto invalid_pm_state;
++ 
++@@ -563,10 +570,13 @@
++ 		goto error_fw_load;
++ 	}
++ 
+++	mhi_ckb01_edl_trace(mhi_cntrl, "programmer-request", "begin", 0, 0, 0);
++ 	/* No userspace firmware fallback may extend the bounded attachment. */
++ 	ret = mhi_cntrl->ckb01_edl_active ?
++ 		request_firmware_direct(&firmware, fw_name, dev) :
++ 		request_firmware(&firmware, fw_name, dev);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "programmer-request", "end", ret,
+++		ret ? 0 : firmware->size, 0);
++ 	if (ret) {
++ 		dev_err(dev, "Error loading firmware: %d\n", ret);
++ 		goto error_fw_load;
++@@ -582,11 +592,13 @@
++ 	fw_sz = firmware->size;
++ 
++ skip_req_fw:
+++	mhi_ckb01_edl_trace(mhi_cntrl, "programmer-load", "begin", 0, size, 0);
++ 	fw_load_type = mhi_fw_load_type_get(mhi_cntrl);
++ 	if (fw_load_type == MHI_FW_LOAD_BHIE)
++ 		ret = mhi_load_image_bhie(mhi_cntrl, fw_data, size);
++ 	else
++ 		ret = mhi_load_image_bhi(mhi_cntrl, fw_data, size);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "programmer-load", "end", ret, size, fw_load_type);
++ 
++ 	/* Error or in EDL mode, we're done */
++ 	if (ret) {
++@@ -626,7 +638,9 @@
++ 
++ fw_load_ready_state:
++ 	/* Transitioning into MHI RESET->READY state */
+++	mhi_ckb01_edl_trace(mhi_cntrl, "ready-transition", "begin", 0, 0, 0);
++ 	ret = mhi_ready_state_transition(mhi_cntrl);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "ready-transition", "end", ret, 0, 0);
++ 	if (ret) {
++ 		dev_err(dev, "MHI did not enter READY state\n");
++ 		goto error_ready_state;
++@@ -642,6 +656,7 @@
++ 	}
++ 
++ error_fw_load:
+++	mhi_ckb01_edl_trace(mhi_cntrl, "firmware-worker", "fail", -EIO, 0, 0);
++ 	write_lock_irq(&mhi_cntrl->pm_lock);
++ 	new_state = mhi_tryset_pm_state(mhi_cntrl, MHI_PM_FW_DL_ERR);
++ 	write_unlock_irq(&mhi_cntrl->pm_lock);
++--- a/drivers/bus/mhi/host/init.c
+++++ b/drivers/bus/mhi/host/init.c
++@@ -185,10 +185,14 @@
++ 		if (mhi_event->offload_ev)
++ 			continue;
++ 
+++		mhi_ckb01_edl_trace(mhi_cntrl, "free-event-irq", "begin", 0, i, mhi_cntrl->irq[mhi_event->irq]);
++ 		free_irq(mhi_cntrl->irq[mhi_event->irq], mhi_event);
++-	}
++-
+++		mhi_ckb01_edl_trace(mhi_cntrl, "free-event-irq", "end", 0, i, 0);
+++	}
+++
+++	mhi_ckb01_edl_trace(mhi_cntrl, "free-bhi-irq", "begin", 0, 0, mhi_cntrl->irq[0]);
++ 	free_irq(mhi_cntrl->irq[0], mhi_cntrl);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "free-bhi-irq", "end", 0, 0, 0);
++ }
++ 
++ static int mhi_init_irq_setup(struct mhi_controller *mhi_cntrl)
++@@ -1116,14 +1120,21 @@
++ 	unsigned long flags;
++ 	int i, j;
++ 
+++	mhi_ckb01_edl_trace(mhi_cntrl, "retire", "begin", 0, 0, 0);
++ 	write_lock_irqsave(&mhi_cntrl->pm_lock, flags);
++ 	mhi_cntrl->pm_state = MHI_PM_LD_ERR_FATAL_DETECT;
++ 	write_unlock_irqrestore(&mhi_cntrl->pm_lock, flags);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "retire-diag-abort", "begin", 0, 0, 0);
++ 	mhi_diag_abort(mhi_cntrl);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "retire-diag-abort", "end", 0, 0, 0);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "retire-diag-stop", "begin", 0, 0, 0);
++ 	mhi_diag_stop(mhi_cntrl);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "retire-diag-stop", "end", 0, 0, 0);
++ 	wake_up_all(&mhi_cntrl->state_event);
++ 
+++	mhi_ckb01_edl_trace(mhi_cntrl, "retire-state-work", "begin", 0, 0, 0);
++ 	cancel_work_sync(&mhi_cntrl->st_worker);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "retire-state-work", "end", 0, 0, 0);
++ 
++ 	/* Shared MSI5/6 and a possible single-vector fallback occur only once.
++ 	 * free_irq subsequently synchronizes each registered action, preventing
++@@ -1133,15 +1144,25 @@
++ 		for (j = 0; j < i; j++)
++ 			if (mhi_cntrl->irq[j] == mhi_cntrl->irq[i])
++ 				break;
++-		if (j == i)
+++		if (j == i) {
+++			mhi_ckb01_edl_trace(mhi_cntrl, "retire-sync-irq", "begin", 0, i, mhi_cntrl->irq[i]);
++ 			synchronize_irq(mhi_cntrl->irq[i]);
++-	}
+++			mhi_ckb01_edl_trace(mhi_cntrl, "retire-sync-irq", "end", 0, i, mhi_cntrl->irq[i]);
+++		}
+++	}
+++	mhi_ckb01_edl_trace(mhi_cntrl, "retire-free-irqs", "begin", 0, 0, 0);
++ 	mhi_deinit_free_irq(mhi_cntrl);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "retire-free-irqs", "end", 0, 0, 0);
++ 	mhi_cntrl->ckb01_irqs_released = true;
++ 	for (i = 0; i < mhi_cntrl->total_ev_rings; i++)
++-		if (!mhi_cntrl->mhi_event[i].offload_ev)
+++		if (!mhi_cntrl->mhi_event[i].offload_ev) {
+++			mhi_ckb01_edl_trace(mhi_cntrl, "retire-tasklet", "begin", 0, i, 0);
++ 			tasklet_kill(&mhi_cntrl->mhi_event[i].task);
+++			mhi_ckb01_edl_trace(mhi_cntrl, "retire-tasklet", "end", 0, i, 0);
+++		}
+++	mhi_ckb01_edl_trace(mhi_cntrl, "retire-state-work", "begin", 0, 0, 0);
++ 	cancel_work_sync(&mhi_cntrl->st_worker);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "retire-state-work", "end", 0, 0, 0);
++ 	spin_lock_irqsave(&mhi_cntrl->transition_lock, flags);
++ 	list_for_each_entry_safe(item, tmp, &mhi_cntrl->transition_list, node) {
++ 		list_del(&item->node);
++@@ -1149,10 +1170,18 @@
++ 	}
++ 	spin_unlock_irqrestore(&mhi_cntrl->transition_lock, flags);
++ 
+++	mhi_ckb01_edl_trace(mhi_cntrl, "retire-clients", "begin", 0, 0, 0);
++ 	device_for_each_child(&mhi_cntrl->mhi_dev->dev, NULL, mhi_destroy_device);
++-	if (mhi_cntrl->ckb01_reset_confirmed && mhi_cntrl->mhi_ctxt)
+++	mhi_ckb01_edl_trace(mhi_cntrl, "retire-clients", "end", 0, 0, 0);
+++	if (mhi_cntrl->ckb01_reset_confirmed && mhi_cntrl->mhi_ctxt) {
+++		mhi_ckb01_edl_trace(mhi_cntrl, "retire-dma", "begin", 0, 0, 0);
++ 		mhi_unprepare_after_power_down(mhi_cntrl);
+++		mhi_ckb01_edl_trace(mhi_cntrl, "retire-dma", "end", 0, 0, 0);
+++	}
+++	mhi_ckb01_edl_trace(mhi_cntrl, "retire-unregister", "begin", 0, 0, 0);
++ 	mhi_unregister_controller(mhi_cntrl);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "retire-unregister", "end", 0, 0, 0);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "retire", "end", 0, 0, 0);
++ }
++ 
++ int mhi_ckb01_retire_reset_controller(struct mhi_controller *mhi_cntrl)
++@@ -1200,7 +1229,9 @@
++ 
++ 	mutex_lock(&mhi_cntrl->pm_mutex);
++ 
+++	mhi_ckb01_edl_trace(mhi_cntrl, "prepare-context", "begin", 0, 0, 0);
++ 	ret = mhi_init_dev_ctxt(mhi_cntrl);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "prepare-context", "end", ret, 0, 0);
++ 	if (ret)
++ 		goto error_dev_ctxt;
++ 
++--- a/drivers/bus/mhi/host/internal.h
+++++ b/drivers/bus/mhi/host/internal.h
++@@ -436,4 +436,68 @@
++ void mhi_unmap_single_use_bb(struct mhi_controller *mhi_cntrl,
++ 			     struct mhi_buf_info *buf_info);
++ 
+++/* Only explicit CKB01 maintenance sessions emit these breadcrumbs. All
+++ * values are already available on the host; no diagnostic register reads.
+++ * Never invoke from a printk/console implementation or add sleeping here.
+++ */
+++static inline bool mhi_ckb01_edl_tracing(struct mhi_controller *cntrl)
+++{
+++	return cntrl->ckb01_edl_maintenance &&
+++		(READ_ONCE(cntrl->ckb01_edl_armed) || cntrl->ckb01_edl_active);
+++}
+++
+++static inline void mhi_ckb01_edl_emit(struct mhi_controller *cntrl,
+++		const char *stage, const char *edge, int rc, u64 a, u64 b, unsigned int op)
+++{
+++	unsigned int seq;
+++
+++	if (!mhi_ckb01_edl_tracing(cntrl))
+++		return;
+++	WRITE_ONCE(cntrl->ckb01_edl_trace_stage, stage);
+++	WRITE_ONCE(cntrl->ckb01_edl_trace_edge, edge);
+++	seq = atomic_inc_return(&cntrl->ckb01_edl_trace_seq);
+++	dev_info(cntrl->cntrl_dev,
+++		 "CKB01-EDL seq=%u cpu=%u op=%u stage=%s edge=%s rc=%d a=0x%llx b=0x%llx pm=0x%x ee=%u\n",
+++		 seq, raw_smp_processor_id(), op, stage, edge, rc,
+++		 (unsigned long long)a, (unsigned long long)b,
+++		 READ_ONCE(cntrl->pm_state), READ_ONCE(cntrl->ee));
+++}
+++
+++static inline void mhi_ckb01_edl_trace(struct mhi_controller *cntrl,
+++		const char *stage, const char *edge, int rc, u64 a, u64 b)
+++{
+++	mhi_ckb01_edl_emit(cntrl, stage, edge, rc, a, b, 0);
+++}
+++
+++/* One budget covers PCI configuration and MMIO pairs across AMSS -> FP.
+++ * Every admitted begin has an end if its operation returns, even when another
+++ * CPU exhausts the budget. High-level stage logs are never budget-suppressed.
+++ */
+++static inline unsigned int mhi_ckb01_edl_io_begin(struct mhi_controller *cntrl,
+++		const char *stage, u64 offset, u64 value)
+++{
+++	unsigned int id, limit;
+++
+++	if (!mhi_ckb01_edl_tracing(cntrl))
+++		return 0;
+++	limit = READ_ONCE(cntrl->ckb01_edl_trace_limit);
+++	if (!limit)
+++		return 0;
+++	id = atomic_inc_return(&cntrl->ckb01_edl_trace_io);
+++	if (id > limit) {
+++		if (id == limit + 1)
+++			mhi_ckb01_edl_trace(cntrl, "io-budget", "exhausted", 0, limit, 0);
+++		return 0;
+++	}
+++	mhi_ckb01_edl_emit(cntrl, stage, "begin", 0, offset, value, id);
+++	return id;
+++}
+++
+++static inline void mhi_ckb01_edl_io_end(struct mhi_controller *cntrl,
+++		unsigned int id, const char *stage, int rc, u64 offset, u64 value)
+++{
+++	if (id)
+++		mhi_ckb01_edl_emit(cntrl, stage, "end", rc, offset, value, id);
+++}
+++
++ #endif /* _MHI_INT_H */
++--- a/drivers/bus/mhi/host/main.c
+++++ b/drivers/bus/mhi/host/main.c
++@@ -512,7 +512,9 @@
++ 	enum mhi_state state;
++ 	enum mhi_pm_state pm_state = 0;
++ 	enum mhi_ee_type ee;
++-
+++	unsigned int trace;
+++
+++	trace = mhi_ckb01_edl_io_begin(mhi_cntrl, "intvec-thread", irq_number, 0);
++ 	write_lock_irq(&mhi_cntrl->pm_lock);
++ 	if (!MHI_REG_ACCESS_VALID(mhi_cntrl->pm_state)) {
++ 		write_unlock_irq(&mhi_cntrl->pm_lock);
++@@ -522,6 +524,8 @@
++ 	state = mhi_get_mhi_state(mhi_cntrl);
++ 	ee = mhi_get_exec_env(mhi_cntrl);
++ 
+++	if (trace)
+++		mhi_ckb01_edl_trace(mhi_cntrl, "intvec-state", "sample", 0, ee, state);
++ 	trace_mhi_intvec_states(mhi_cntrl, ee, state);
++ 	if (state == MHI_STATE_SYS_ERR) {
++ 		dev_dbg(dev, "System error detected\n");
++@@ -558,6 +562,7 @@
++ 	}
++ 
++ exit_intvec:
+++	mhi_ckb01_edl_io_end(mhi_cntrl, trace, "intvec-thread", 0, irq_number, pm_state);
++ 
++ 	return IRQ_HANDLED;
++ }
++--- a/drivers/bus/mhi/host/pci_generic.c
+++++ b/drivers/bus/mhi/host/pci_generic.c
++@@ -23,6 +23,11 @@
++ static bool ckb01_edl_maintenance;
++ module_param(ckb01_edl_maintenance, bool, 0444);
++ MODULE_PARM_DESC(ckb01_edl_maintenance, "Enable explicit CKB01 PCIe EDL maintenance");
+++
+++/* Bounded verbose access pairs, dormant outside the exact maintenance profile. */
+++static unsigned int ckb01_edl_trace_io_limit = 256;
+++module_param(ckb01_edl_trace_io_limit, uint, 0444);
+++MODULE_PARM_DESC(ckb01_edl_trace_io_limit, "CKB01 maintenance PCI/MMIO trace pairs (0..4096)");
++ 
++ #define CKB01_EDL_ATTACH_MS 120000
++ #define MHI_PCI_DEFAULT_BAR_NUM 0
++@@ -1163,18 +1168,27 @@
++ 
++ 	if (test_and_set_bit(MHI_PCI_DEV_FAULT, &mhi_pdev->status))
++ 		return;
+++	mhi_ckb01_edl_trace(mhi_cntrl, "fault-pm-lock", "begin", 0, 0, 0);
++ 	/* Gate MMIO before abort/dumps, including an already-running consumer. */
++ 	write_lock_irqsave(&mhi_cntrl->pm_lock, flags);
++ 	previous_pm = mhi_cntrl->pm_state;
++ 	mhi_cntrl->pm_state = MHI_PM_LD_ERR_FATAL_DETECT;
++ 	write_unlock_irqrestore(&mhi_cntrl->pm_lock, flags);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "fault-pm-lock", "end", 0, previous_pm, 0);
++ 	mhi_diag_trace(mhi_cntrl, MHI_DIAG_ERROR, -1, -1, previous_pm,
++ 		       MHI_PM_LD_ERR_FATAL_DETECT, -ENODEV);
++ 	mhi_diag_abort(mhi_cntrl);
++ 	timer_delete(&mhi_pdev->health_check_timer);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "fault-pci-vendor", "begin", 0, PCI_VENDOR_ID, 0);
++ 	ret = pci_read_config_word(pdev, PCI_VENDOR_ID, &vendor);
++-	if (!ret && vendor != 0xffff && vendor != 0)
++-		pcie_capability_read_word(pdev, PCI_EXP_LNKSTA, &link);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "fault-pci-vendor", "end", ret, PCI_VENDOR_ID, vendor);
+++	if (!ret && vendor != 0xffff && vendor != 0) {
+++		int link_ret;
+++
+++		mhi_ckb01_edl_trace(mhi_cntrl, "fault-link-status", "begin", 0, PCI_EXP_LNKSTA, 0);
+++		link_ret = pcie_capability_read_word(pdev, PCI_EXP_LNKSTA, &link);
+++		mhi_ckb01_edl_trace(mhi_cntrl, "fault-link-status", "end", link_ret, PCI_EXP_LNKSTA, link);
+++	}
++ 	dev_err(&pdev->dev,
++ 		"CKB01 first fault: %s uptime_ms=%u pci_rc=%d vendor=%04x link=%04x pm=%x ee=%u state=%u M0=%u M2=%u M3=%u; MMIO skipped, automatic reset inhibited\n",
++ 		reason, jiffies_to_msecs(jiffies), ret, vendor, link,
++@@ -1213,6 +1227,7 @@
++ 			}
++ 		}
++ 	}
+++	mhi_ckb01_edl_trace(mhi_cntrl, "fault-snapshot", "end", ret, vendor, link);
++ 	wake_up_all(&mhi_cntrl->state_event);
++ }
++ 
++@@ -1223,7 +1238,13 @@
++ 	    (!mhi_pci_is_alive(mhi_cntrl) ||
++ 	     MHI_PM_IN_FATAL_STATE(READ_ONCE(mhi_cntrl->pm_state))))
++ 		return -ENODEV;
++-	*out = readl(addr);
+++	{
+++		unsigned long offset = (unsigned long)addr - (unsigned long)mhi_cntrl->regs;
+++		unsigned int trace = mhi_ckb01_edl_io_begin(mhi_cntrl, "mmio-read", offset, 0);
+++
+++		*out = readl(addr);
+++		mhi_ckb01_edl_io_end(mhi_cntrl, trace, "mmio-read", 0, offset, *out);
+++	}
++ 	return 0;
++ }
++ 
++@@ -1234,7 +1255,13 @@
++ 	    (!mhi_pci_is_alive(mhi_cntrl) ||
++ 	     MHI_PM_IN_FATAL_STATE(READ_ONCE(mhi_cntrl->pm_state))))
++ 		return;
++-	writel(val, addr);
+++	{
+++		unsigned long offset = (unsigned long)addr - (unsigned long)mhi_cntrl->regs;
+++		unsigned int trace = mhi_ckb01_edl_io_begin(mhi_cntrl, "mmio-write", offset, val);
+++
+++		writel(val, addr);
+++		mhi_ckb01_edl_io_end(mhi_cntrl, trace, "mmio-write", 0, offset, val);
+++	}
++ }
++ 
++ static void mhi_pci_status_cb(struct mhi_controller *mhi_cntrl,
++@@ -1283,8 +1310,13 @@
++ {
++ 	struct pci_dev *pdev = to_pci_dev(mhi_cntrl->cntrl_dev);
++ 	u16 vendor = 0;
++-
++-	if (pci_read_config_word(pci_physfn(pdev), PCI_VENDOR_ID, &vendor))
+++	unsigned int trace;
+++	int ret;
+++
+++	trace = mhi_ckb01_edl_io_begin(mhi_cntrl, "pci-vendor", PCI_VENDOR_ID, 0);
+++	ret = pci_read_config_word(pci_physfn(pdev), PCI_VENDOR_ID, &vendor);
+++	mhi_ckb01_edl_io_end(mhi_cntrl, trace, "pci-vendor", ret, PCI_VENDOR_ID, vendor);
+++	if (ret)
++ 		return false;
++ 
++ 	if (vendor == (u16) ~0 || vendor == 0)
++@@ -1531,17 +1563,22 @@
++ static int ckb01_edl_sample(struct mhi_controller *cntrl, enum mhi_ee_type *ee)
++ {
++ 	u32 offset, value;
+++	unsigned int trace;
++ 
++ 	if (!mhi_pci_is_alive(cntrl))
++ 		return -ENODEV;
+++	trace = mhi_ckb01_edl_io_begin(cntrl, "sample-bhioff", BHIOFF, 0);
++ 	offset = readl(cntrl->regs + BHIOFF);
+++	mhi_ckb01_edl_io_end(cntrl, trace, "sample-bhioff", 0, BHIOFF, offset);
++ 	if (cntrl->reg_len < BHI_EXECENV + sizeof(u32) ||
++ 	    offset > cntrl->reg_len - BHI_EXECENV - sizeof(u32) ||
++ 	    offset < 0x28 || !IS_ALIGNED(offset, sizeof(u32)))
++ 		return -ERANGE;
++ 	if (!mhi_pci_is_alive(cntrl))
++ 		return -ENODEV;
+++	trace = mhi_ckb01_edl_io_begin(cntrl, "sample-ee", offset + BHI_EXECENV, 0);
++ 	value = readl(cntrl->regs + offset + BHI_EXECENV);
+++	mhi_ckb01_edl_io_end(cntrl, trace, "sample-ee", 0, offset + BHI_EXECENV, value);
++ 	if (value >= MHI_EE_MAX)
++ 		return -EAGAIN;
++ 	*ee = value;
++@@ -1553,15 +1590,27 @@
++ 	struct mhi_controller *cntrl = &mhi_pdev->mhi_cntrl;
++ 	unsigned long flags;
++ 
+++	mhi_ckb01_edl_trace(cntrl, "freeze-pm-lock", "begin", 0, 0, 0);
++ 	write_lock_irqsave(&cntrl->pm_lock, flags);
++ 	cntrl->pm_state = MHI_PM_LD_ERR_FATAL_DETECT;
++ 	write_unlock_irqrestore(&cntrl->pm_lock, flags);
+++	mhi_ckb01_edl_trace(cntrl, "freeze-pm-lock", "end", 0, 0, 0);
+++	mhi_ckb01_edl_trace(cntrl, "freeze-diag-abort", "begin", 0, 0, 0);
++ 	mhi_diag_abort(cntrl);
+++	mhi_ckb01_edl_trace(cntrl, "freeze-diag-abort", "end", 0, 0, 0);
+++	mhi_ckb01_edl_trace(cntrl, "freeze-health-timer", "begin", 0, 0, 0);
++ 	timer_delete_sync(&mhi_pdev->health_check_timer);
+++	mhi_ckb01_edl_trace(cntrl, "freeze-health-timer", "end", 0, 0, 0);
+++	mhi_ckb01_edl_trace(cntrl, "freeze-recovery-work", "begin", 0, 0, 0);
++ 	cancel_work_sync(&mhi_pdev->recovery_work);
+++	mhi_ckb01_edl_trace(cntrl, "freeze-recovery-work", "end", 0, 0, 0);
++ 	wake_up_all(&cntrl->state_event);
+++	mhi_ckb01_edl_trace(cntrl, "freeze-diag-stop", "begin", 0, 0, 0);
++ 	mhi_diag_stop(cntrl);
+++	mhi_ckb01_edl_trace(cntrl, "freeze-diag-stop", "end", 0, 0, 0);
+++	mhi_ckb01_edl_trace(cntrl, "freeze-state-worker", "begin", 0, 0, 0);
++ 	cancel_work_sync(&cntrl->st_worker);
+++	mhi_ckb01_edl_trace(cntrl, "freeze-state-worker", "end", 0, 0, 0);
++ }
++ 
++ static int mhi_pci_ckb01_edl_trigger(struct mhi_controller *cntrl)
++@@ -1581,9 +1630,11 @@
++ 		ret = -EPERM;
++ 		goto out;
++ 	}
+++	mhi_ckb01_edl_trace(cntrl, "mhi-trigger", "begin", 0, 0, 0);
++ 	/* Even a failed explicit attempt is consumed: no reset retry loop. */
++ 	mhi_pdev->edl_triggered = true;
++ 	ret = mhi_pci_generic_edl_trigger(cntrl);
+++	mhi_ckb01_edl_trace(cntrl, "mhi-trigger", "end", ret, 0, 0);
++ 	ckb01_edl_freeze(mhi_pdev);
++ 	if (ret) {
++ 		mhi_pdev->edl_error = ret;
++@@ -1605,9 +1656,15 @@
++ 	size_t reg_len = cntrl->reg_len;
++ 	int *irq = cntrl->irq;
++ 	u32 nr_irqs = cntrl->nr_irqs;
++-
+++	unsigned int trace_seq, trace_io, trace_limit;
+++	unsigned long next_report = jiffies;
+++
+++	mhi_ckb01_edl_trace(cntrl, "attach", "begin", 0, nr_irqs, cntrl->reg_len);
++ 	WRITE_ONCE(mhi_pdev->edl_attaching, true);
+++	mhi_ckb01_edl_trace(cntrl, "attach-arm-timer", "begin", 0, 0, 0);
++ 	timer_delete_sync(&mhi_pdev->edl_arm_timer);
+++	mhi_ckb01_edl_trace(cntrl, "attach-arm-timer", "end", 0, 0, 0);
+++	mhi_ckb01_edl_trace(cntrl, "wait-edl", "begin", 0, 0, 0);
++ 	/* Until EDL/FP is actually seen, keep all old DMA and client contexts.
++ 	 * Arm itself never relaxes the existing AMSS fatal/recovery policy.
++ 	 */
++@@ -1617,6 +1674,11 @@
++ 			goto fail;
++ 		}
++ 		ret = ckb01_edl_sample(cntrl, &ee);
+++		if (time_after_eq(jiffies, next_report)) {
+++			mhi_ckb01_edl_trace(cntrl, "wait-edl", "poll", ret, ee,
+++				jiffies_to_msecs(mhi_pdev->edl_deadline - jiffies));
+++			next_report = jiffies + HZ;
+++		}
++ 		if (!ret) {
++ 			WRITE_ONCE(mhi_pdev->edl_ee, ee);
++ 			if (ee == MHI_EE_EDL || ee == MHI_EE_FP)
++@@ -1629,10 +1691,13 @@
++ 		goto fail;
++ 	}
++ 
+++	mhi_ckb01_edl_trace(cntrl, "wait-edl", "end", 0, ee, 0);
++ 	ckb01_edl_freeze(mhi_pdev);
++ 	WRITE_ONCE(cntrl->ee, ee);
++ 	cntrl->ckb01_reset_confirmed = true;
+++	mhi_ckb01_edl_trace(cntrl, "retire-controller", "begin", 0, ee, 0);
++ 	ret = mhi_ckb01_retire_reset_controller(cntrl);
+++	mhi_ckb01_edl_trace(cntrl, "retire-controller", "end", ret, ee, 0);
++ 	if (ret)
++ 		goto fail;
++ 	mhi_pdev->controller_registered = false;
++@@ -1645,8 +1710,15 @@
++ 		ret = -ENOSPC;
++ 		goto fail;
++ 	}
+++	/* Preserve diagnostic counters across the controller replacement. */
+++	trace_seq = atomic_read(&cntrl->ckb01_edl_trace_seq);
+++	trace_io = atomic_read(&cntrl->ckb01_edl_trace_io);
+++	trace_limit = cntrl->ckb01_edl_trace_limit;
++ 	/* Registration requires a zeroed controller: the PCI owner alone survives. */
++ 	memset(cntrl, 0, sizeof(*cntrl));
+++	atomic_set(&cntrl->ckb01_edl_trace_seq, trace_seq);
+++	atomic_set(&cntrl->ckb01_edl_trace_io, trace_io);
+++	cntrl->ckb01_edl_trace_limit = trace_limit;
++ 	cntrl->cntrl_dev = &pdev->dev;
++ 	cntrl->regs = regs;
++ 	cntrl->reg_len = reg_len;
++@@ -1667,18 +1739,26 @@
++ 	cntrl->name = "ckb01-firehose";
++ 	cntrl->edl_image = "qcom/ckb01/prog_firehose_sdx55.mbn";
++ 	clear_bit(MHI_PCI_DEV_FAULT, &mhi_pdev->status);
+++	mhi_ckb01_edl_trace(cntrl, "fp-register", "begin", 0, 0, 0);
++ 	ret = mhi_register_controller(cntrl, &ckb01_firehose_config);
+++	mhi_ckb01_edl_trace(cntrl, "fp-register", "end", ret, 0, 0);
++ 	if (ret)
++ 		goto fail;
++ 	mhi_pdev->controller_registered = true;
+++	mhi_ckb01_edl_trace(cntrl, "fp-prepare", "begin", 0, 0, 0);
++ 	ret = mhi_prepare_for_power_up(cntrl);
+++	mhi_ckb01_edl_trace(cntrl, "fp-prepare", "end", ret, 0, 0);
++ 	if (ret)
++ 		goto fail;
++ 	mhi_pdev->controller_prepared = true;
+++	mhi_ckb01_edl_trace(cntrl, "fp-power-up", "begin", 0, 0, 0);
++ 	ret = mhi_async_power_up(cntrl);
+++	mhi_ckb01_edl_trace(cntrl, "fp-power-up", "end", ret, 0, 0);
++ 	if (ret)
++ 		goto fail;
++ 	set_bit(MHI_PCI_DEV_STARTED, &mhi_pdev->status);
+++	next_report = jiffies;
+++	mhi_ckb01_edl_trace(cntrl, "wait-fp", "begin", 0, 0, 0);
++ 
++ 	/* The mainline BHI worker performs RAM load. Wake its existing BHI wait
++ 	 * condition only in this explicit bounded session, with the PCI alive gate
++@@ -1690,6 +1770,11 @@
++ 			goto fail;
++ 		}
++ 		ret = ckb01_edl_sample(cntrl, &ee);
+++		if (time_after_eq(jiffies, next_report)) {
+++			mhi_ckb01_edl_trace(cntrl, "wait-fp", "poll", ret, ee,
+++				READ_ONCE(cntrl->ckb01_fp_ready));
+++			next_report = jiffies + HZ;
+++		}
++ 		if (ret)
++ 			goto fail;
++ 		WRITE_ONCE(mhi_pdev->edl_ee, ee);
++@@ -1705,7 +1790,9 @@
++ 		if (ee == MHI_EE_FP && READ_ONCE(cntrl->pm_state) == MHI_PM_M0 &&
++ 		    !work_busy(&cntrl->st_worker)) {
++ 			if (!fp_queued && READ_ONCE(cntrl->ee) != MHI_EE_FP) {
+++				mhi_ckb01_edl_trace(cntrl, "fp-queue", "begin", 0, 0, 0);
++ 				ret = mhi_queue_state_transition(cntrl, DEV_ST_TRANSITION_FP);
+++				mhi_ckb01_edl_trace(cntrl, "fp-queue", "end", ret, 0, 0);
++ 				if (ret)
++ 					goto fail;
++ 				fp_queued = true;
++@@ -1714,8 +1801,11 @@
++ 			    READ_ONCE(cntrl->ee) == MHI_EE_FP &&
++ 			    READ_ONCE(cntrl->mhi_chan[34].mhi_dev) &&
++ 			    device_is_bound(&cntrl->mhi_chan[34].mhi_dev->dev)) {
+++				mhi_ckb01_edl_trace(cntrl, "firehose-bound", "end", 0, 34, 35);
++ 				mhi_pdev->edl_state = CKB01_EDL_FP;
++ 				mhi_pdev->edl_error = 0;
+++				mhi_ckb01_edl_trace(cntrl, "wait-fp", "end", 0, ee, 0);
+++				mhi_ckb01_edl_trace(cntrl, "attach", "end", 0, ee, 0);
++ 				WRITE_ONCE(mhi_pdev->edl_attaching, false);
++ 				return 0;
++ 			}
++@@ -1725,6 +1815,7 @@
++ 	}
++ 	ret = -ETIMEDOUT;
++ fail:
+++	mhi_ckb01_edl_trace(cntrl, "attach", "fail", ret, ee, 0);
++ 	/* On failure, never free contexts based merely on a timeout or fatal PM.
++ 	 * Keep the PCI function bound and all potentially DMA-visible memory.
++ 	 */
++@@ -1733,6 +1824,7 @@
++ 	mhi_pdev->edl_error = ret;
++ 	mhi_pdev->edl_state = CKB01_EDL_FAILED;
++ 	WRITE_ONCE(mhi_pdev->edl_attaching, false);
+++	mhi_ckb01_edl_trace(cntrl, "attach", "end", ret, ee, 0);
++ 	return ret;
++ }
++ 
++@@ -1744,6 +1836,7 @@
++ 	    cmpxchg(&mhi_pdev->edl_state, CKB01_EDL_ARMED,
++ 		    CKB01_EDL_FAILED) != CKB01_EDL_ARMED)
++ 		return;
+++	mhi_ckb01_edl_trace(&mhi_pdev->mhi_cntrl, "arm-timer", "expired", -ETIMEDOUT, 0, 0);
++ 	WRITE_ONCE(mhi_pdev->edl_error, -ETIMEDOUT);
++ 	WRITE_ONCE(mhi_pdev->edl_cancel, true);
++ 	mhi_pci_ckb01_fault(&mhi_pdev->mhi_cntrl, "EDL arm expired");
++@@ -1759,10 +1852,14 @@
++ 			   ee == MHI_EE_EDL ? "EDL" : ee == MHI_EE_FP ? "FP" : "UNKNOWN";
++ 
++ 	/* Cached only: reading status never polls BHI or touches the endpoint. */
++-	return sysfs_emit(buf, "state=%s ee=%s error=%d triggered=%u attaching=%u\n",
+++	return sysfs_emit(buf, "state=%s ee=%s error=%d triggered=%u attaching=%u trace_seq=%d trace_io=%d trace_stage=%s trace_edge=%s\n",
++ 		states[READ_ONCE(mhi_pdev->edl_state)], name,
++ 		READ_ONCE(mhi_pdev->edl_error), READ_ONCE(mhi_pdev->edl_triggered),
++-		READ_ONCE(mhi_pdev->edl_attaching));
+++		READ_ONCE(mhi_pdev->edl_attaching),
+++		atomic_read(&mhi_pdev->mhi_cntrl.ckb01_edl_trace_seq),
+++		atomic_read(&mhi_pdev->mhi_cntrl.ckb01_edl_trace_io),
+++		READ_ONCE(mhi_pdev->mhi_cntrl.ckb01_edl_trace_stage) ?: "idle",
+++		READ_ONCE(mhi_pdev->mhi_cntrl.ckb01_edl_trace_edge) ?: "idle");
++ }
++ 
++ static ssize_t ckb01_edl_store(struct device *dev, struct device_attribute *attr,
++@@ -1792,12 +1889,18 @@
++ 			ret = -EIO;
++ 			goto out;
++ 		}
+++		atomic_set(&cntrl->ckb01_edl_trace_seq, 0);
+++		atomic_set(&cntrl->ckb01_edl_trace_io, 0);
+++		cntrl->ckb01_edl_trace_limit = min(ckb01_edl_trace_io_limit, 4096U);
++ 		WRITE_ONCE(cntrl->ckb01_edl_armed, true);
+++		mhi_ckb01_edl_trace(cntrl, "arm", "begin", 0,
+++				   CKB01_EDL_ATTACH_MS, cntrl->ckb01_edl_trace_limit);
++ 		mhi_pdev->edl_cancel = false;
++ 		mhi_pdev->edl_deadline = jiffies + msecs_to_jiffies(CKB01_EDL_ATTACH_MS);
++ 		mhi_pdev->edl_state = CKB01_EDL_ARMED;
++ 		mod_timer(&mhi_pdev->edl_arm_timer,
++ 			  mhi_pdev->edl_deadline);
+++		mhi_ckb01_edl_trace(cntrl, "arm", "end", 0, mhi_pdev->edl_ee, 0);
++ 	} else if (sysfs_streq(buf, "attach")) {
++ 		if (mhi_pdev->edl_state != CKB01_EDL_ARMED)
++ 			ret = -EPERM;
++--- a/drivers/bus/mhi/host/pm.c
+++++ b/drivers/bus/mhi/host/pm.c
++@@ -182,10 +182,12 @@
++ 		return -EIO;
++ 	}
++ 
+++	mhi_ckb01_edl_trace(mhi_cntrl, "ready-reset-clear", "begin", 0, 0, 0);
++ 	/* Wait for RESET to be cleared and READY bit to be set by the device */
++ 	ret = mhi_poll_reg_field(mhi_cntrl, mhi_cntrl->regs, MHICTRL,
++ 				 MHICTRL_RESET_MASK, 0, interval_us,
++ 				 mhi_cntrl->timeout_ms);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "ready-reset-clear", "end", ret, 0, 0);
++ 	if (ret) {
++ 		dev_err(dev, "Device failed to clear MHI Reset\n");
++ 		return ret;
++@@ -193,9 +195,11 @@
++ 
++ 	timeout_ms = mhi_cntrl->ready_timeout_ms ?
++ 		mhi_cntrl->ready_timeout_ms : mhi_cntrl->timeout_ms;
+++	mhi_ckb01_edl_trace(mhi_cntrl, "ready-bit", "begin", 0, timeout_ms, 0);
++ 	ret = mhi_poll_reg_field(mhi_cntrl, mhi_cntrl->regs, MHISTATUS,
++ 				 MHISTATUS_READY_MASK, 1, interval_us,
++ 				 timeout_ms);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "ready-bit", "end", ret, 0, 0);
++ 	if (ret) {
++ 		dev_err(dev, "Device failed to enter MHI Ready\n");
++ 		return ret;
++@@ -221,7 +225,9 @@
++ 	}
++ 
++ 	/* Configure MMIO registers */
+++	mhi_ckb01_edl_trace(mhi_cntrl, "ready-init-mmio", "begin", 0, 0, 0);
++ 	ret = mhi_init_mmio(mhi_cntrl);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "ready-init-mmio", "end", ret, 0, 0);
++ 	if (ret) {
++ 		dev_err(dev, "Error configuring MMIO registers\n");
++ 		goto error_mmio;
++@@ -248,7 +254,9 @@
++ 	}
++ 
++ 	/* Set MHI to M0 state */
+++	mhi_ckb01_edl_trace(mhi_cntrl, "ready-request-m0", "begin", 0, 0, 0);
++ 	mhi_set_mhi_state(mhi_cntrl, MHI_STATE_M0);
+++	mhi_ckb01_edl_trace(mhi_cntrl, "ready-request-m0", "end", 0, 0, 0);
++ 	read_unlock_bh(&mhi_cntrl->pm_lock);
++ 
++ 	return 0;
++@@ -266,12 +274,14 @@
++ 	struct device *dev = &mhi_cntrl->mhi_dev->dev;
++ 	int i;
++ 
+++	mhi_ckb01_edl_trace(mhi_cntrl, "m0-transition", "begin", 0, 0, 0);
++ 	write_lock_irq(&mhi_cntrl->pm_lock);
++ 	mhi_cntrl->dev_state = MHI_STATE_M0;
++ 	cur_state = mhi_tryset_pm_state(mhi_cntrl, MHI_PM_M0);
++ 	write_unlock_irq(&mhi_cntrl->pm_lock);
++ 	if (unlikely(cur_state != MHI_PM_M0)) {
++ 		dev_err(dev, "Unable to transition to M0 state\n");
+++		mhi_ckb01_edl_trace(mhi_cntrl, "m0-transition", "end", -EIO, cur_state, 0);
++ 		return -EIO;
++ 	}
++ 	mhi_cntrl->M0++;
++@@ -326,6 +336,7 @@
++ 	read_unlock_bh(&mhi_cntrl->pm_lock);
++ 	wake_up_all(&mhi_cntrl->state_event);
++ 
+++	mhi_ckb01_edl_trace(mhi_cntrl, "m0-transition", "end", 0, 0, 0);
++ 	return 0;
++ }
++ 
++@@ -827,6 +838,7 @@
++ 			kfree(itr);
++ 			continue;
++ 		}
+++		mhi_ckb01_edl_trace(mhi_cntrl, "state-worker", "begin", 0, itr->state, 0);
++ 		trace_mhi_pm_st_transition(mhi_cntrl, itr->state);
++ 
++ 		switch (itr->state) {
++@@ -856,6 +868,7 @@
++ 			mhi_pm_mission_mode_transition(mhi_cntrl);
++ 			break;
++ 		case DEV_ST_TRANSITION_FP:
+++			mhi_ckb01_edl_trace(mhi_cntrl, "fp-create-clients", "begin", 0, 0, 0);
++ 			write_lock_irq(&mhi_cntrl->pm_lock);
++ 			mhi_cntrl->ee = MHI_EE_FP;
++ 			write_unlock_irq(&mhi_cntrl->pm_lock);
++@@ -863,6 +876,7 @@
++ 			mhi_uevent_notify(mhi_cntrl, mhi_cntrl->ee);
++ 			if (mhi_cntrl->ckb01_edl_active)
++ 				WRITE_ONCE(mhi_cntrl->ckb01_fp_ready, true);
+++			mhi_ckb01_edl_trace(mhi_cntrl, "fp-create-clients", "end", 0, 0, 0);
++ 			break;
++ 		case DEV_ST_TRANSITION_READY:
++ 			mhi_ready_state_transition(mhi_cntrl);
++@@ -879,6 +893,7 @@
++ 		default:
++ 			break;
++ 		}
+++		mhi_ckb01_edl_trace(mhi_cntrl, "state-worker", "end", 0, itr->state, 0);
++ 		kfree(itr);
++ 	}
++ }
++--- a/include/linux/mhi.h
+++++ b/include/linux/mhi.h
++@@ -6,6 +6,7 @@
++ #ifndef _MHI_H_
++ #define _MHI_H_
++ 
+++#include <linux/atomic.h>
++ #include <linux/device.h>
++ #include <linux/dma-direction.h>
++ #include <linux/mutex.h>
++@@ -462,6 +463,12 @@
++ 	bool ckb01_reset_confirmed;
++ 	bool ckb01_fp_ready;
++ 	bool ckb01_edl_armed;
+++	/* Host-only diagnostics; never read endpoint state to populate these. */
+++	atomic_t ckb01_edl_trace_seq;
+++	atomic_t ckb01_edl_trace_io;
+++	u32 ckb01_edl_trace_limit;
+++	const char *ckb01_edl_trace_stage;
+++	const char *ckb01_edl_trace_edge;
++ 	bool self_boot;
++ 	bool no_auto_recovery;
++ 	bool defer_net_prepare;
